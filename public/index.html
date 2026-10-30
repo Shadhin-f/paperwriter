@@ -88,11 +88,16 @@
 
       <section class="files-view" id="filesView" hidden>
         <div class="files-toolbar">
-          <button class="chip-btn" id="newFileBtn"><i data-icon="plus"></i>New file</button>
-          <label class="chip-btn" id="uploadBtn"><i data-icon="upload"></i>Upload<input type="file" id="uploadInput" multiple hidden /></label>
+          <button class="chip-btn" id="newFileBtn" title="New file"><i data-icon="filePlus"></i>File</button>
+          <button class="chip-btn" id="newFolderBtn" title="New folder"><i data-icon="folderPlus"></i>Folder</button>
+          <label class="chip-btn" id="uploadBtn" title="Upload files"><i data-icon="upload"></i>Upload<input type="file" id="uploadInput" multiple hidden /></label>
+          <span class="spacer"></span>
+          <button class="icon-btn small" id="collapseAllBtn" title="Collapse or expand all folders"><i data-icon="collapseAll"></i></button>
+          <button class="icon-btn small" id="exportBtn" title="Export project as .zip"><i data-icon="download"></i></button>
         </div>
-        <ul class="file-list" id="fileList"></ul>
-        <p class="files-tip">Tip: drop images or .bib files here. The <i data-icon="star"></i> file is compiled.</p>
+        <label class="files-filter"><i data-icon="search"></i><input id="fileFilter" type="search" placeholder="Filter files…" aria-label="Filter files" autocomplete="off" /></label>
+        <ul class="file-list" id="fileList" role="tree" aria-label="Project files"></ul>
+        <p class="files-tip">Drag files onto a folder to move them, or drop files from your computer. The <i data-icon="star"></i> file is compiled.</p>
       </section>
     </aside>
 

@@ -21,12 +21,17 @@ It also uses TeX Live or MiKTeX if you already have them.
 ## Features
 
 - **Code + live PDF.** A LaTeX editor with syntax highlighting, error markers that jump to the line, and a crisp PDF preview.
+  Click any text in the PDF to jump to that word in the source.
 - **Visual editor.** Switch to **Visual** to type directly on the page. Equations render as you'd see them,
   and you drag blocks by their **⠿** handle to reorder. Every change is written back to the `.tex` source.
 - **AI co-author.** Chat with Claude, ChatGPT, Gemini or a local model. It edits your paper with reviewable diffs
   you can apply or revert, and fixes compile errors on request.
 - **Live co-editing.** Share a link and edit together, with everyone's cursors and avatars visible. Undo only undoes your own changes.
 - **Files stay files.** Projects are plain folders in `projects/`, so you can use git, Dropbox or any other editor alongside PaperWriter.
+- **Folder tree.** Collapsible folders, a filter box, drag-and-drop to move files and folders, and rename, delete or upload on any folder.
+  Moving a file doesn't rewrite `\input` or `\includegraphics` paths, so PaperWriter warns you when one still points at the old place.
+- **Export.** *Project menu → Export project as .zip* (or the download button in the Files tab) gives you the source files, ready to
+  back up, open on another platform, or import again. Share links and build output are left out.
 - **Import from anywhere.** *Project menu → Import project…* (or drag the file onto the side panel) brings in an export from
   Overleaf, Prism, Authorea, arXiv and similar platforms: `.zip`, `.tar.gz`/`.tgz`/`.tar`, a gzipped `.tex`, or a single `.tex`.
   The main file is detected automatically, wrapper folders and build files (`.aux`, `.log`, …) are dropped, and nothing outside the new project folder is ever written.
@@ -115,7 +120,8 @@ Optional environment variables (see [`.env.example`](.env.example); a `.env` fil
 | `lib/compile.js` | Tectonic / latexmk / pdfLaTeX / XeLaTeX / LuaLaTeX, log parsing |
 | `lib/ai.js` | AI providers and streaming |
 | `lib/network.js` | Network addresses and the Cloudflare tunnel |
-| `lib/importer.js` | Importing exports from other LaTeX platforms (zip / tar.gz / tex) |
+| `lib/importer.js`, `lib/exporter.js` | Importing exports from other LaTeX platforms (zip / tar.gz / tex), and exporting a project as .zip |
+| `lib/synctex.js` | Finding the source line behind a click in the PDF |
 | `public/` | The web app (`app.js`, `visual.js` visual editor, `collab.js` sync client) |
 | `scripts/build.mjs` | Copies browser libraries into `public/vendor` and bundles the sync client (runs automatically on `npm start`) |
 

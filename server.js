@@ -11,6 +11,7 @@ import { attachCollab, room, flushProject, closeRoom, kickGuests } from './lib/r
 import * as network from './lib/network.js';
 import { importProject } from './lib/importer.js';
 import { inverseSearch } from './lib/synctex.js';
+import { exportProject } from './lib/exporter.js';
 
 const PORT = Number(process.env.PORT) || 5178;
 
@@ -199,6 +200,13 @@ route('GET', '/api/projects/:p/file', async (req, { who, params, url }) => {
   return { __file: full, __headers: { 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'" } };
 });
 
+route('POST', '/api/projects/:p/folders', async (req, { who, params }) => {
+  access.requireProject(who, params.p, 'editor');
+  const { path: rel } = await readJson(req);
+  await (await room(params.p)).createFolder(rel);
+  return { ok: true };
+});
+
 route('POST', '/api/projects/:p/files', async (req, { who, params }) => {
   access.requireProject(who, params.p, 'editor');
   const { path: rel, content } = await readJson(req);
@@ -217,14 +225,17 @@ route('PUT', '/api/projects/:p/file', async (req, { who, params, url }) => {
 
 route('DELETE', '/api/projects/:p/file', async (req, { who, params, url }) => {
   access.requireProject(who, params.p, 'editor');
-  await (await room(params.p)).remove(url.searchParams.get('path'));
+  const r = await room(params.p);
+  const rel = url.searchParams.get('path');
+  await (url.searchParams.get('folder') ? r.removeFolder(rel) : r.remove(rel));
   return { ok: true };
 });
 
 route('POST', '/api/projects/:p/rename', async (req, { who, params }) => {
   access.requireProject(who, params.p, 'editor');
-  const { from, to } = await readJson(req);
-  await (await room(params.p)).rename(from, to);
+  const { from, to, folder } = await readJson(req);
+  const r = await room(params.p);
+  await (folder ? r.renameFolder(from, to) : r.rename(from, to));
   return { ok: true };
 });
 
@@ -247,6 +258,22 @@ route('GET', '/api/projects/:p/pdf', async (req, { who, params }) => {
   access.requireProject(who, params.p);
   const meta = await projects.getMeta(params.p);
   return { __file: path.join(projects.projectDir(params.p), '.out', path.basename(meta.main, '.tex') + '.pdf'), __headers: { 'Cache-Control': 'no-store' } };
+});
+
+/** The whole project as a .zip, for moving to another computer or platform. */
+route('GET', '/api/projects/:p/export', async (req, { who, params, res }) => {
+  access.requireProject(who, params.p);
+  await flushProject(params.p);
+  const zipped = await exportProject(params.p);
+  res.writeHead(200, {
+    'Content-Type': 'application/zip',
+    'Content-Length': zipped.length,
+    'Content-Disposition': `attachment; filename="${params.p}.zip"`,
+    'Cache-Control': 'no-store',
+    ...SECURITY_HEADERS,
+  });
+  res.end(zipped);
+  return { __handled: true };
 });
 
 /** Click in the PDF → source file and line (SyncTeX). */
@@ -401,6 +428,10 @@ function listen(host) {
     start();
   });
 }
+
+// One failed background task must not take the server down for everyone connected.
+process.on('unhandledRejection', (e) => console.error('[server] unhandled error:', e));
+process.on('uncaughtException', (e) => console.error('[server] uncaught error:', e));
 
 await projects.ensureWelcomeProject();
 await listen(hostFromEnv || (getSettings().lanAccess ? '0.0.0.0' : '127.0.0.1'));

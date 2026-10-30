@@ -53,6 +53,11 @@ const ICONS = {
   eye: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
   logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>',
   globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',
+  folderOpen: '<path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/>',
+  folderPlus: '<path d="M12 10v6M9 13h6M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+  filePlus: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h6M9 15h6M12 12v6"/>',
+  book: '<path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/>',
+  collapseAll: '<path d="m7 20 5-5 5 5M7 4l5 5 5-5"/>',
   lock: '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
 };
 const svg = (body) =>
@@ -85,6 +90,10 @@ const state = {
   files: [],
   meta: { main: 'main.tex' },
   file: null,
+  folders: [],
+  fileFilter: '',
+  moving: false, // a move of ours is in progress, so its open file shouldn't be closed
+  drag: null,
   docs: new Map(),
   status: null,
   modelCache: {},
@@ -461,7 +470,7 @@ async function loadProject(name) {
   }
   const grant = isOwner() ? { role: 'owner', ai: true } : state.me.projects.find((p) => p.name === name);
   if (!grant) throw new Error('You don’t have access to that project.');
-  Object.assign(state, { project: name, role: grant.role, ai: grant.ai, file: null, files: [], errors: [], warnings: [], lastResult: null, log: '', people: [] });
+  Object.assign(state, { project: name, role: grant.role, ai: grant.ai, file: null, files: [], folders: [], fileFilter: '', errors: [], warnings: [], lastResult: null, log: '', people: [] });
   prefs.lastProject = name;
   savePrefs();
   $('#projectName').textContent = name;
@@ -472,6 +481,7 @@ async function loadProject(name) {
   renderChatAccess();
   renderLog();
   clearPdf();
+  $('#fileFilter').value = '';
   renderFiles();
   cm.swapDoc(CodeMirror.Doc('', 'stex'));
   cm.setOption('readOnly', 'nocursor');
@@ -487,12 +497,13 @@ async function loadProject(name) {
   ws.files.observe(() => {
     if (state.ws !== ws) return;
     refreshFiles();
-    if (state.file && !ws.files.has(state.file)) {
+    if (state.file && !state.moving && !ws.files.has(state.file)) {
       const next = ws.main();
       if (ws.files.has(next)) openFile(next);
     }
   });
   ws.meta.observe(() => state.ws === ws && refreshFiles());
+  ws.folders.observe(() => state.ws === ws && refreshFiles());
   await ws.connect();
   if (state.ws !== ws) return;
   renderSyncStatus();
@@ -508,57 +519,187 @@ async function loadProject(name) {
 function refreshFiles() {
   if (!state.ws) return;
   state.files = state.ws.fileList();
+  state.folders = state.ws.folderList();
   state.meta = { main: state.ws.main() };
   renderFiles();
 }
 
+const sortNames = (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+const parentOf = (p) => (p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '');
+const baseName = (p) => p.slice(p.lastIndexOf('/') + 1);
+
 function fileIcon(f) {
-  return f.kind === 'image' ? 'image' : /\.(tex|sty|cls)$/.test(f.path) ? 'file' : f.kind === 'text' ? 'code' : 'files';
+  if (f.kind === 'image') return 'image';
+  if (/\.bib$/i.test(f.path)) return 'book';
+  if (/\.(sty|cls|bst)$/i.test(f.path)) return 'settings';
+  if (/\.tex$/i.test(f.path)) return 'file';
+  return f.kind === 'text' ? 'code' : 'files';
 }
 
 function fmtSize(n) {
   return n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`;
 }
 
+/** Collapsed folders are remembered per project, in this browser. */
+function collapsedFolders() {
+  return new Set(prefs.collapsed?.[state.project] || []);
+}
+
+function setCollapsed(folders, on) {
+  const set = collapsedFolders();
+  for (const f of folders) {
+    if (on) set.add(f);
+    else set.delete(f);
+  }
+  prefs.collapsed = { ...prefs.collapsed, [state.project]: [...set] };
+  savePrefs();
+}
+
+/** Nest the flat file list under its folders. */
+function buildTree(files, folders) {
+  const root = { path: '', name: '', folders: new Map(), files: [] };
+  const nodeFor = (dir) => {
+    let node = root;
+    if (!dir) return node;
+    let path = '';
+    for (const seg of dir.split('/')) {
+      path = path ? `${path}/${seg}` : seg;
+      if (!node.folders.has(seg)) node.folders.set(seg, { path, name: seg, folders: new Map(), files: [] });
+      node = node.folders.get(seg);
+    }
+    return node;
+  };
+  for (const d of folders) nodeFor(d);
+  for (const f of files) nodeFor(parentOf(f.path)).files.push(f);
+  return root;
+}
+
+const countFiles = (node) => node.files.length + [...node.folders.values()].reduce((n, c) => n + countFiles(c), 0);
+const subtreeMatches = (node, q) => node.path.toLowerCase().includes(q) || node.files.some((f) => f.path.toLowerCase().includes(q)) || [...node.folders.values()].some((c) => subtreeMatches(c, q));
+
+/** Flatten the tree into visible rows: folders first, then files, each sorted naturally. */
+function treeRows(node, depth, q, collapsed, rows = []) {
+  for (const child of [...node.folders.values()].sort((a, b) => sortNames(a.name, b.name))) {
+    if (q && !subtreeMatches(child, q)) continue;
+    const open = q ? true : !collapsed.has(child.path);
+    rows.push({ folder: child, depth, open });
+    // A folder whose own name matches shows everything inside it.
+    if (open) treeRows(child, depth + 1, q && child.path.toLowerCase().includes(q) ? '' : q, collapsed, rows);
+  }
+  for (const f of [...node.files].sort((a, b) => sortNames(baseName(a.path), baseName(b.path)))) {
+    if (!q || f.path.toLowerCase().includes(q)) rows.push({ file: f, depth });
+  }
+  return rows;
+}
+
+function folderRow({ folder, depth, open }) {
+  const edit = canEdit();
+  return `<li class="tree-row folder-row" role="treeitem" aria-level="${depth + 1}" aria-expanded="${open}" tabindex="0" data-folder="${esc(folder.path)}" draggable="${edit}" style="--depth:${depth}">
+    <span class="twist ${open ? 'open' : ''}">${icon('chevron')}</span>${icon(open ? 'folderOpen' : 'folder')}<span class="name" title="${esc(folder.path)}">${esc(folder.name)}</span>
+    <span class="acts" ${edit ? '' : 'hidden'}>
+      <button data-fact="newfile" title="New file here">${icon('filePlus')}</button>
+      <button data-fact="newfolder" title="New folder here">${icon('folderPlus')}</button>
+      <button data-fact="upload" title="Upload here">${icon('upload')}</button>
+      <button data-fact="rename" title="Rename or move">${icon('pencil')}</button>
+      <button data-fact="delete" title="Delete folder">${icon('trash')}</button>
+    </span>
+    <span class="size">${countFiles(folder) || ''}</span>
+  </li>`;
+}
+
+function fileRow({ file: f, depth }) {
+  const isMain = f.path === state.meta.main;
+  const edit = canEdit();
+  return `<li class="tree-row file-item ${f.path === state.file ? 'active' : ''}" role="treeitem" aria-level="${depth + 1}" tabindex="0" data-path="${esc(f.path)}" draggable="${edit}" style="--depth:${depth}">
+    <span class="twist"></span>${icon(fileIcon(f))}<span class="name" title="${esc(f.path)}">${esc(baseName(f.path))}</span>
+    ${isMain ? `<span class="main-star" title="Main file (compiled)">${icon('star')}</span>` : ''}
+    <span class="acts" ${edit ? '' : 'hidden'}>
+      ${!isMain && /\.tex$/i.test(f.path) ? `<button data-fact="main" title="Set as main file">${icon('starOutline')}</button>` : ''}
+      <button data-fact="rename" title="Rename or move">${icon('pencil')}</button>
+      <button data-fact="delete" title="Delete">${icon('trash')}</button>
+    </span>
+    <span class="size">${fmtSize(f.size)}</span>
+  </li>`;
+}
+
 function renderFiles() {
   const ul = $('#fileList');
-  ul.innerHTML = state.files
-    .map((f) => {
-      const isMain = f.path === state.meta.main;
-      return `<li class="file-item ${f.path === state.file ? 'active' : ''}" data-path="${esc(f.path)}">
-        ${icon(fileIcon(f))}<span class="name">${esc(f.path)}</span>
-        ${isMain ? `<span class="main-star" title="Main file (compiled)">${icon('star')}</span>` : ''}
-        <span class="acts" ${canEdit() ? '' : 'hidden'}>
-          ${!isMain && f.path.endsWith('.tex') ? `<button data-fact="main" title="Set as main file">${icon('starOutline')}</button>` : ''}
-          <button data-fact="rename" title="Rename">${icon('pencil')}</button>
-          <button data-fact="delete" title="Delete">${icon('trash')}</button>
-        </span>
-        <span class="size">${fmtSize(f.size)}</span>
-      </li>`;
-    })
-    .join('');
-  $('#newFileBtn').hidden = !canEdit();
-  $('#uploadBtn').hidden = !canEdit();
+  const focused = document.activeElement?.closest?.('.tree-row');
+  const focusKey = focused && ul.contains(focused) ? (focused.dataset.folder ?? focused.dataset.path) : null;
+  const q = state.fileFilter.trim().toLowerCase();
+  const rows = treeRows(buildTree(state.files, state.folders), 0, q, collapsedFolders());
+  ul.innerHTML = rows.length
+    ? rows.map((r) => (r.folder ? folderRow(r) : fileRow(r))).join('')
+    : `<li class="tree-empty">${q ? 'No files match that filter.' : 'No files yet.'}</li>`;
+  if (focusKey != null) [...ul.querySelectorAll('.tree-row')].find((r) => (r.dataset.folder ?? r.dataset.path) === focusKey)?.focus();
+  for (const id of ['#newFileBtn', '#newFolderBtn', '#uploadBtn']) $(id).hidden = !canEdit();
+}
+
+/** Move or rename a file or folder, keeping it open if it was. */
+async function relocate(from, to, folder = false) {
+  const ws = state.ws;
+  state.moving = true;
+  try {
+    if (folder) await ws.renameFolder(from, to);
+    else await ws.rename(from, to);
+    await waitFor(() => (folder ? ws.folders.has(to) : ws.files.has(to)));
+    refreshFiles();
+    const open = state.file;
+    const target = open === from ? to : folder && open?.startsWith(`${from}/`) ? to + open.slice(from.length) : null;
+    if (target) {
+      await waitFor(() => ws.files.has(target));
+      await openFile(target);
+    }
+  } finally {
+    state.moving = false;
+  }
+  // Moving a file doesn't rewrite \input or \includegraphics paths, so say when one still points at the old place.
+  const stem = from.replace(/\.[^./]+$/, '');
+  const stale = stem.includes('/') || folder ? stem : null;
+  const mentioned = state.ws.fileList().some((f) => f.kind === 'text' && state.ws.text(f.path)?.toString().includes(stale ?? `{${stem}`));
+  if (mentioned) toast(`Moved. "${stem}" is still referenced in your LaTeX, so update that path.`, '', 7000);
+}
+
+async function moveInto(item, dir) {
+  const to = dir ? `${dir}/${baseName(item.path)}` : baseName(item.path);
+  if (to === item.path) return;
+  if (item.folder && (dir === item.path || dir.startsWith(`${item.path}/`))) return toast('A folder can’t be moved into itself.', 'err');
+  if (dir) setCollapsed([dir], false);
+  await relocate(item.path, to, item.folder);
+}
+
+async function folderAction(folder, act) {
+  if (act === 'newfile') return newFile(folder);
+  if (act === 'newfolder') return newFolder(folder);
+  if (act === 'upload') return uploadFiles(await pickFiles(), folder);
+  if (act === 'rename') {
+    const to = await askText('Rename or move folder', { value: folder, okLabel: 'Save' });
+    if (to && to !== folder) await relocate(folder, to.replace(/\/+$/, ''), true);
+  } else if (act === 'delete') {
+    const n = state.files.filter((f) => f.path.startsWith(`${folder}/`)).length;
+    if (!(await confirmBox('Delete folder?', `"${folder}"${n ? ` and the ${n} file${n > 1 ? 's' : ''} inside it` : ''} will be removed for everyone.`))) return;
+    await state.ws.removeFolder(folder);
+  } else {
+    setCollapsed([folder], !collapsedFolders().has(folder));
+    renderFiles();
+  }
 }
 
 $('#fileList').addEventListener('click', async (e) => {
-  const li = e.target.closest('.file-item');
-  if (!li) return;
-  const path = li.dataset.path;
+  const row = e.target.closest('.tree-row');
+  if (!row) return;
   const act = e.target.closest('[data-fact]')?.dataset.fact;
   try {
+    if (row.dataset.folder !== undefined) return await folderAction(row.dataset.folder, act);
+    const path = row.dataset.path;
     if (act === 'main') {
       await state.ws.setMain(path);
       await waitFor(() => state.ws.main() === path);
       toast(`${path} is now the main file`, 'ok');
       compile();
     } else if (act === 'rename') {
-      const to = await askText('Rename file', { value: path, okLabel: 'Rename' });
-      if (!to || to === path) return;
-      await state.ws.rename(path, to);
-      await waitFor(() => state.ws.files.has(to));
-      refreshFiles();
-      if (state.file === path) await openFile(to);
+      const to = await askText('Rename or move file', { value: path, okLabel: 'Save' });
+      if (to && to !== path) await relocate(path, to);
     } else if (act === 'delete') {
       if (!(await confirmBox('Delete file?', `"${path}" will be removed from this project for everyone.`))) return;
       await state.ws.remove(path);
@@ -571,30 +712,132 @@ $('#fileList').addEventListener('click', async (e) => {
   }
 });
 
-async function newFile() {
-  const name = await askText('New file', { placeholder: 'e.g. sections/intro.tex or refs.bib', okLabel: 'Create' });
+// Keyboard: arrows move and open/close folders, Enter activates.
+$('#fileList').addEventListener('keydown', (e) => {
+  const row = e.target.closest('.tree-row');
+  if (!row || e.target !== row) return;
+  const rows = $$('.tree-row', $('#fileList'));
+  const i = rows.indexOf(row);
+  const folder = row.dataset.folder;
+  if (e.key === 'ArrowDown') rows[i + 1]?.focus();
+  else if (e.key === 'ArrowUp') rows[i - 1]?.focus();
+  else if (e.key === 'Enter' || e.key === ' ') row.click();
+  else if (e.key === 'ArrowRight' && folder !== undefined && collapsedFolders().has(folder)) row.click();
+  else if (e.key === 'ArrowLeft' && folder !== undefined && !collapsedFolders().has(folder)) row.click();
+  else return;
+  e.preventDefault();
+});
+
+/* Drag a row onto a folder to move it, or onto empty space to move it to the top level. */
+const dropDir = (target) => {
+  const row = target.closest?.('.tree-row');
+  if (!row) return '';
+  return row.dataset.folder ?? parentOf(row.dataset.path);
+};
+function markDrop(dir) {
+  const ul = $('#fileList');
+  for (const r of $$('.drop-target', ul)) r.classList.remove('drop-target');
+  ul.classList.toggle('drop-root', dir === '');
+  if (dir) [...ul.querySelectorAll('.folder-row')].find((r) => r.dataset.folder === dir)?.classList.add('drop-target');
+}
+const clearDrop = () => {
+  markDrop(null);
+  $$('.dragging', $('#fileList')).forEach((r) => r.classList.remove('dragging'));
+};
+$('#fileList').addEventListener('dragstart', (e) => {
+  const row = e.target.closest?.('.tree-row');
+  if (!row || !canEdit()) return e.preventDefault();
+  state.drag = row.dataset.folder !== undefined ? { path: row.dataset.folder, folder: true } : { path: row.dataset.path, folder: false };
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', state.drag.path);
+  row.classList.add('dragging');
+});
+$('#fileList').addEventListener('dragover', (e) => {
+  if (!state.drag) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  markDrop(dropDir(e.target));
+});
+$('#fileList').addEventListener('dragleave', (e) => {
+  if (state.drag && !$('#fileList').contains(e.relatedTarget)) markDrop(null);
+});
+$('#fileList').addEventListener('drop', (e) => {
+  const item = state.drag;
+  if (!item) return;
+  e.preventDefault();
+  e.stopPropagation();
+  state.drag = null;
+  clearDrop();
+  moveInto(item, dropDir(e.target)).catch((err) => toast(err.message, 'err'));
+});
+$('#fileList').addEventListener('dragend', () => {
+  state.drag = null;
+  clearDrop();
+});
+
+const pickFiles = () =>
+  new Promise((resolve) => {
+    const input = Object.assign(document.createElement('input'), { type: 'file', multiple: true });
+    input.onchange = () => resolve([...input.files]);
+    input.click();
+  });
+
+async function newFile(dir = '') {
+  const name = await askText(dir ? `New file in ${dir}/` : 'New file', { placeholder: 'e.g. intro.tex, refs.bib or sections/intro.tex', okLabel: 'Create' });
   if (!name) return;
+  const path = dir ? `${dir}/${name}` : name;
   try {
-    await state.ws.createText(name, name.endsWith('.tex') ? `% ${name}\n` : '');
-    await waitFor(() => state.ws.files.has(name));
+    await state.ws.createText(path, path.endsWith('.tex') ? `% ${path}\n` : '');
+    await waitFor(() => state.ws.files.has(path));
+    if (dir) setCollapsed([dir], false);
     refreshFiles();
-    await openFile(name);
+    await openFile(path);
     if (isMobile()) setView('editor');
   } catch (e) {
     toast(e.message, 'err');
   }
 }
 
-async function uploadFiles(list) {
+async function newFolder(dir = '') {
+  const name = await askText(dir ? `New folder in ${dir}/` : 'New folder', { placeholder: 'e.g. figures or sections', okLabel: 'Create' });
+  if (!name) return;
+  const path = dir ? `${dir}/${name}` : name;
+  try {
+    await state.ws.createFolder(path);
+    await waitFor(() => state.ws.folders.has(path.replace(/\/+$/, '')));
+    if (dir) setCollapsed([dir], false);
+    refreshFiles();
+  } catch (e) {
+    toast(e.message, 'err');
+  }
+}
+
+async function uploadFiles(list, dir = '') {
   if (!canEdit()) return toast('This link only allows viewing.', 'err');
+  if (dir) setCollapsed([dir], false);
   for (const f of list) {
     try {
-      await state.ws.upload(f.name, f);
+      await state.ws.upload(dir ? `${dir}/${f.name}` : f.name, f);
       toast(`Uploaded ${f.name}`, 'ok');
     } catch (e) {
       toast(`${f.name}: ${e.message}`, 'err');
     }
   }
+}
+
+/** Download the whole project as a .zip that other platforms (and Import project) can open. */
+async function exportProject() {
+  const name = state.project;
+  if (!name) return;
+  const res = await fetch(`/api/projects/${P()}/export`);
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
+  const url = URL.createObjectURL(await res.blob());
+  const a = Object.assign(document.createElement('a'), { href: url, download: `${name}.zip` });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+  toast(`Exported ${name}.zip`, 'ok');
 }
 
 async function openProjectMenu() {
@@ -611,11 +854,12 @@ async function openProjectMenu() {
            ${p.name === state.project ? `<span class="check">${icon('check')}</span>` : ''}</button>`,
        )
        .join('')}
+     <div class="pop-sep"></div>
+     <button class="pop-item" data-pact="export">${icon('download')}<span class="grow"><span>Export project as .zip</span><span class="sub">For backup, or to move to another platform</span></span></button>
      ${
        guest
          ? ''
-         : `<div class="pop-sep"></div>
-     <button class="pop-item" data-pact="new">${icon('plus')}<span class="grow">New project…</span></button>
+         : `<button class="pop-item" data-pact="new">${icon('plus')}<span class="grow">New project…</span></button>
      <button class="pop-item" data-pact="import">${icon('upload')}<span class="grow"><span>Import project…</span><span class="sub">Overleaf, Prism, arXiv… (.zip, .tar.gz, .tex)</span></span></button>
      <button class="pop-item btn-danger" data-pact="delete">${icon('trash')}<span class="grow">Delete “${esc(state.project)}”…</span></button>`
      }`,
@@ -638,6 +882,8 @@ async function openProjectMenu() {
         toast('Project created', 'ok');
       } else if (item.dataset.pact === 'import') {
         await importProjectFlow();
+      } else if (item.dataset.pact === 'export') {
+        await exportProject();
       } else if (item.dataset.pact === 'delete') {
         if (!(await confirmBox('Delete project?', `"${state.project}" and all its files will be permanently deleted. Its share links stop working.`))) return;
         await api(`/api/projects/${P()}`, { method: 'DELETE' });
@@ -1037,7 +1283,52 @@ function zoom(dir) {
 
 $('#pdfScroll').addEventListener('scroll', updatePageInd, { passive: true });
 
-// Click text in the PDF to jump to the source line that produced it (SyncTeX).
+const measure = document.createElement('canvas').getContext('2d');
+
+/** The word at a point on a PDF page, with its neighbours (they tell repeated words apart). */
+async function wordAt(pageNum, x, y) {
+  const page = await state.pdfDoc.getPage(pageNum);
+  const fromBottom = page.getViewport({ scale: 1 }).height - y;
+  const { items } = await page.getTextContent();
+  const it = items.find((i) => {
+    const [, , , , left, base] = i.transform;
+    const size = i.height || 10;
+    return i.str.trim() && x >= left - 1 && x <= left + i.width + 1 && fromBottom >= base - size * 0.35 && fromBottom <= base + size;
+  });
+  if (!it) return null;
+  const str = it.str.normalize('NFKC'); // ligatures like "ﬁ" back to plain letters
+  // Character widths vary, so estimate the clicked character from measured text rather than a simple ratio.
+  measure.font = '100px serif';
+  const target = ((x - it.transform[4]) / (it.width || 1)) * measure.measureText(str).width;
+  let at = 0;
+  while (at < str.length && measure.measureText(str.slice(0, at + 1)).width < target) at++;
+  const words = [...str.matchAll(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu)];
+  if (!words.length) return null;
+  const k = words.findIndex((m) => at < m.index + m[0].length);
+  const i = k < 0 ? words.length - 1 : k;
+  return { word: words[i][0].replace(/-$/, ''), before: words[i - 1]?.[0], after: words[i + 1]?.[0] };
+}
+
+/** Find a PDF word in the source, near the line SyncTeX gave. Longer phrases first, closest line first. */
+function findInSource(line, { word, before, after }) {
+  const near = (range) => [0, ...Array.from({ length: range }, (_, i) => [-(i + 1), i + 1]).flat()].map((d) => line + d);
+  const search = (needle, offset, range) => {
+    const re = new RegExp(`(?<![\\p{L}\\p{N}])${needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}])`, 'u');
+    for (const l of near(range)) {
+      const m = l >= 0 && l <= cm.lastLine() ? re.exec(cm.getLine(l)) : null;
+      if (m) return { line: l, ch: m.index + offset };
+    }
+    return null;
+  };
+  return (
+    (before && after && search(`${before} ${word} ${after}`, before.length + 1, 15)) ||
+    (after && search(`${word} ${after}`, 0, 15)) ||
+    (before && search(`${before} ${word}`, before.length + 1, 15)) ||
+    search(word, 0, 8)
+  );
+}
+
+// Click text in the PDF to jump to it in the source: SyncTeX gives the line, the word gives the exact spot.
 $('#pdfScroll').addEventListener('click', async (e) => {
   const pageEl = e.target.closest('.pdf-page');
   if (!pageEl || !state.project || getSelection().toString()) return;
@@ -1049,8 +1340,19 @@ $('#pdfScroll').addEventListener('click', async (e) => {
     if (!r.found) return toast('Couldn’t find that spot in the source. Try recompiling.', '', 2500);
     if (prefs.editorMode === 'visual') setEditorMode('code');
     await jumpTo(r.file, r.line);
-    const h = cm.addLineClass(r.line - 1, 'background', 'sync-flash');
-    setTimeout(() => cm.removeLineClass(h, 'background', 'sync-flash'), 1600);
+    const ln = Math.min(r.line - 1, cm.lastLine());
+    const clicked = await wordAt(Number(pageEl.dataset.page), x, y).catch(() => null);
+    const spot = clicked && findInSource(ln, clicked);
+    if (spot) {
+      // A cursor, not a selection: typing right after a click shouldn't replace the word.
+      cm.setCursor(spot);
+      cm.scrollIntoView(spot, 120);
+      const mark = cm.markText(spot, { line: spot.line, ch: spot.ch + clicked.word.length }, { className: 'sync-word' });
+      setTimeout(() => mark.clear(), 2200);
+    } else {
+      const h = cm.addLineClass(ln, 'background', 'sync-flash');
+      setTimeout(() => cm.removeLineClass(h, 'background', 'sync-flash'), 1600);
+    }
   } catch (err) {
     toast(err.message, 'err');
   }
@@ -1706,7 +2008,26 @@ function wire() {
   };
   for (const b of $$('[data-side]')) b.onclick = () => setSideTab(b.dataset.side);
   for (const b of $$('#mobileNav button')) b.onclick = () => setView(b.dataset.view);
-  $('#newFileBtn').onclick = newFile;
+  $('#newFileBtn').onclick = () => newFile();
+  $('#newFolderBtn').onclick = () => newFolder();
+  $('#exportBtn').onclick = () => exportProject().catch((err) => toast(err.message, 'err'));
+  $('#collapseAllBtn').onclick = () => {
+    const all = state.folders;
+    const anyOpen = all.some((f) => !collapsedFolders().has(f));
+    setCollapsed(all, anyOpen);
+    renderFiles();
+  };
+  $('#fileFilter').addEventListener('input', (e) => {
+    state.fileFilter = e.target.value;
+    renderFiles();
+  });
+  $('#fileFilter').addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    e.stopPropagation();
+    e.target.value = '';
+    state.fileFilter = '';
+    renderFiles();
+  });
   $('#uploadInput').onchange = (e) => {
     uploadFiles([...e.target.files]);
     e.target.value = '';
@@ -1717,15 +2038,20 @@ function wire() {
     e.preventDefault();
     setSideTab('files');
     $('#filesView').classList.add('drop');
+    markDrop(dropDir(e.target) || null);
   });
-  fv.addEventListener('dragleave', () => $('#filesView').classList.remove('drop'));
+  fv.addEventListener('dragleave', () => {
+    $('#filesView').classList.remove('drop');
+    markDrop(null);
+  });
   fv.addEventListener('drop', (e) => {
     e.preventDefault();
     $('#filesView').classList.remove('drop');
+    markDrop(null);
     const dropped = [...e.dataTransfer.files];
     // A dropped export archive becomes a new project; anything else is added to this one.
     if (dropped.length === 1 && isOwner() && /\.(zip|tgz|tar|tar\.gz)$/i.test(dropped[0].name)) importProjectFlow(dropped[0]).catch((err) => toast(err.message, 'err'));
-    else if (dropped.length) uploadFiles(dropped);
+    else if (dropped.length) uploadFiles(dropped, dropDir(e.target));
   });
 
   $('#findBtn').onclick = () => cm.execCommand('findPersistent');

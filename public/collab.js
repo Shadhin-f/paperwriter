@@ -26,6 +26,7 @@ export class Workspace {
     this.ydoc = new Y.Doc();
     this.files = this.ydoc.getMap('files');
     this.meta = this.ydoc.getMap('meta');
+    this.folders = this.ydoc.getMap('folders');
     this.undoManagers = new Map();
     this.listeners = { status: new Set(), presence: new Set() };
     this.connected = false;
@@ -103,6 +104,10 @@ export class Workspace {
     return out.sort((a, b) => a.path.localeCompare(b.path));
   }
 
+  folderList() {
+    return [...this.folders.keys()];
+  }
+
   text(path) {
     const v = this.files.get(path);
     return v instanceof Y.Text ? v : null;
@@ -141,6 +146,23 @@ export class Workspace {
     await this.api(this.url('/rename'), { method: 'POST', body: { from, to } });
     this.undoManagers.get(from)?.destroy();
     this.undoManagers.delete(from);
+  }
+
+  createFolder(path) {
+    return this.api(this.url('/folders'), { method: 'POST', body: { path } });
+  }
+
+  async renameFolder(from, to) {
+    await this.api(this.url('/rename'), { method: 'POST', body: { from, to, folder: true } });
+    for (const [p, um] of this.undoManagers) {
+      if (!p.startsWith(`${from}/`)) continue;
+      um.destroy();
+      this.undoManagers.delete(p);
+    }
+  }
+
+  removeFolder(path) {
+    return this.api(`${this.url('/file')}?path=${encodeURIComponent(path)}&folder=1`, { method: 'DELETE' });
   }
 
   remove(path) {
