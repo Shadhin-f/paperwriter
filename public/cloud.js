@@ -39,7 +39,15 @@ export class Cloud {
   constructor(url, anonKey) {
     this.url = url.replace(/\/+$/, '');
     this.anonKey = anonKey;
+    // Read these before Supabase consumes the URL: a password-reset link, or an error sent back by Google/GitHub.
+    const hash = new URLSearchParams(location.hash.slice(1));
+    const query = new URLSearchParams(location.search);
+    this.recovery = hash.get('type') === 'recovery';
+    this.urlError = hash.get('error_description') || query.get('error_description') || null;
     this.sb = createClient(url, anonKey, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
+    this.sb.auth.onAuthStateChange((ev) => {
+      if (ev === 'PASSWORD_RECOVERY') this.recovery = true;
+    });
     this.session = null;
   }
 
@@ -64,6 +72,41 @@ export class Cloud {
 
   async sendMagicLink(email, redirectTo) {
     check(await this.sb.auth.signInWithOtp({ email, options: { emailRedirectTo: redirectTo } }));
+  }
+
+  /** Which sign-in methods are switched on in Supabase (Authentication → Sign In / Providers). */
+  async providers() {
+    try {
+      const r = await fetch(`${this.url}/auth/v1/settings`, { headers: { apikey: this.anonKey } });
+      const j = await r.json();
+      return { google: !!j.external?.google, github: !!j.external?.github, email: j.external?.email !== false };
+    } catch {
+      return { google: false, github: false, email: true };
+    }
+  }
+
+  async signInWithPassword(email, password) {
+    return check(await this.sb.auth.signInWithPassword({ email, password }));
+  }
+
+  /** Returns { session } when signed in straight away, or { needsConfirm: true } when Supabase emails a confirmation link. */
+  async signUp(email, password, redirectTo) {
+    const data = check(await this.sb.auth.signUp({ email, password, options: { emailRedirectTo: redirectTo } }));
+    // Supabase hides whether an address is taken; an existing confirmed account comes back with no identities.
+    if (data.user && !data.user.identities?.length) throw new Error('An account with this email already exists. Sign in instead.');
+    return data.session ? { session: data.session } : { needsConfirm: true };
+  }
+
+  async signInWithOAuth(provider, redirectTo) {
+    check(await this.sb.auth.signInWithOAuth({ provider, options: { redirectTo } }));
+  }
+
+  async sendPasswordReset(email, redirectTo) {
+    check(await this.sb.auth.resetPasswordForEmail(email, { redirectTo }));
+  }
+
+  async updatePassword(password) {
+    check(await this.sb.auth.updateUser({ password }));
   }
 
   async signOut() {

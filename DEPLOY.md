@@ -31,6 +31,24 @@ Allow about 15 minutes.
 > "You have been invited" email. Without it they get a regular sign-in link, which works just as well.
 > The key bypasses all security rules, so only ever put it in server environment variables (Vercel or `.env`), never in code.
 
+### Sign-in methods (avoid email limits)
+
+The sign-in screen offers **email + password**, **"Email me a sign-in link"**, and a **Continue with Google / GitHub** button for each provider you switch on.
+Buttons appear automatically, with no code change. Logging in with a password, Google or GitHub sends no email.
+Supabase only emails once, to confirm a new password account. Keep **Confirm email** on: projects are shared by email address,
+so confirmation is what stops someone from claiming a collaborator's address.
+
+**Google** (Supabase → Authentication → Sign In / Providers → Google):
+1. In <https://console.cloud.google.com/apis/credentials>, create a project if asked, then **Create credentials → OAuth client ID → Web application**.
+   (You may first need to fill in the **OAuth consent screen**: app name, your email, and *External* audience.)
+2. Under **Authorized redirect URIs**, add `https://YOUR-PROJECT-ID.supabase.co/auth/v1/callback`.
+   Supabase shows this exact URL on its Google provider page.
+3. Paste the **Client ID** and **Client secret** into Supabase's Google provider and enable it.
+
+**GitHub** (Supabase → Authentication → Sign In / Providers → GitHub):
+1. <https://github.com/settings/developers> → **New OAuth App**. Set Homepage URL to your site, and Authorization callback URL to the same `…supabase.co/auth/v1/callback`.
+2. **Generate a new client secret**, then paste the Client ID and secret into Supabase and enable it.
+
 ## 2. GitHub
 
 1. Create an **empty** repository at <https://github.com/new>, with no README, `.gitignore` or license.

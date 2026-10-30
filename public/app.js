@@ -1847,6 +1847,7 @@ async function boot() {
   try {
     state.config = await api('/api/config');
   } catch (e) {
+    $('#authScreen').hidden = true;
     return toast(`Couldn't reach the PaperWriter server: ${e.message}`, 'err', 8000);
   }
   if (state.config.hosted && !state.config.cloud) return showNeedsSupabase();
@@ -1854,13 +1855,17 @@ async function boot() {
     try {
       state.collab = await import('./cloud.js');
       state.cloud = new state.collab.Cloud(state.config.supabaseUrl, state.config.supabaseAnonKey);
-      if (!(await state.cloud.init())) return showSignIn();
+      const session = await state.cloud.init();
+      if (session && state.cloud.recovery) return showSetPassword();
+      if (!session) return showSignIn();
     } catch (e) {
+      $('#authScreen').hidden = true;
       return toast(`Couldn't connect to Supabase: ${e.message}`, 'err', 10000);
     }
     document.body.classList.add('cloud');
     renderAccount();
   }
+  $('#authScreen').hidden = true;
   try {
     await refreshStatus();
     await ensureModelChoice();
@@ -1917,35 +1922,151 @@ function applyEditorMode() {
 
 /* ───────────────────────── cloud: sign-in & account ───────────────────────── */
 
-function showSignIn() {
+const OAUTH_ICONS = {
+  google:
+    '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="#4285F4" d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5a5.6 5.6 0 0 1-2.4 3.6v3h3.9c2.3-2.1 3.5-5.2 3.5-8.8z"/><path fill="#34A853" d="M12 24c3.2 0 6-1.1 7.9-2.9l-3.9-3c-1.1.7-2.4 1.2-4 1.2-3.1 0-5.7-2.1-6.6-4.9H1.4v3.1A12 12 0 0 0 12 24z"/><path fill="#FBBC05" d="M5.4 14.4a7.2 7.2 0 0 1 0-4.6V6.7h-4a12 12 0 0 0 0 10.8l4-3.1z"/><path fill="#EA4335" d="M12 4.8c1.7 0 3.3.6 4.5 1.8l3.4-3.4A12 12 0 0 0 1.4 6.7l4 3.1C6.3 6.9 8.9 4.8 12 4.8z"/></svg>',
+  github:
+    '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="currentColor"><path d="M12 .5a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2.1c-3.3.7-4-1.6-4-1.6-.6-1.4-1.4-1.8-1.4-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.9 1.2 1.9 1.2 1.1 1.8 2.9 1.3 3.6 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.5-1.3-5.5-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.3 4.7 18.3 5 18.3 5c.7 1.7.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.8 5.6-5.5 5.9.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .5z"/></svg>',
+};
+
+/** Supabase's error messages, reworded for people. */
+function friendlyAuthError(err) {
+  const m = String(err?.message || err);
+  if (/invalid login credentials/i.test(m)) return 'Wrong email or password.';
+  if (/email not confirmed/i.test(m)) return 'Please confirm your email first. Check your inbox for the confirmation link.';
+  if (/rate limit/i.test(m)) return 'Too many emails were sent recently. Sign in with a password or Google instead, or try again in an hour.';
+  if (/password should be at least/i.test(m)) return 'Use a password with at least 6 characters.';
+  if (/signups not allowed/i.test(m)) return 'New sign-ups are switched off for this site.';
+  return m;
+}
+
+async function showSignIn() {
   const params = new URLSearchParams(location.search);
   const invited = params.has('join') || params.has('project');
+  const back = `${location.origin}${location.pathname}${location.search}`;
+  const providers = await state.cloud.providers();
+  const oauth = ['google', 'github'].filter((p) => providers[p]);
   const el = $('#authScreen');
   el.hidden = false;
   el.innerHTML = `
-    <form class="auth-card" id="authForm">
+    <div class="auth-card">
       <img src="/logo.svg" alt="" width="52" height="52" />
-      <h1>${invited ? 'You’re invited to a paper' : 'Sign in to PaperWriter'}</h1>
-      <p>${invited ? 'Sign in with your email to open the shared project.' : 'Write LaTeX together, with an AI co-author. We’ll email you a sign-in link, no password needed.'}</p>
-      <input class="input" type="email" name="email" required autocomplete="email" placeholder="you@university.edu" />
-      <button class="btn-primary" type="submit">${icon('mail')}<span>Email me a sign-in link</span></button>
-      <p class="note" id="authMsg"></p>
-    </form>`;
-  hydrateIcons(el);
-  $('#authForm').onsubmit = async (e) => {
+      <h1>${invited ? 'You’re invited to a paper' : 'Welcome to PaperWriter'}</h1>
+      <p>${invited ? 'Sign in to open the shared project.' : 'Write LaTeX together, with an AI co-author.'}</p>
+      ${oauth.map((p) => `<button class="btn-oauth" data-oauth="${p}">${OAUTH_ICONS[p]}<span>Continue with ${p === 'google' ? 'Google' : 'GitHub'}</span></button>`).join('')}
+      ${oauth.length ? '<div class="auth-sep"><span>or use your email</span></div>' : ''}
+      <div class="seg auth-tabs" role="tablist">
+        <button class="seg-btn active" data-auth-mode="signin">Sign in</button>
+        <button class="seg-btn" data-auth-mode="signup">Create account</button>
+      </div>
+      <form id="authForm" class="auth-form">
+        <input class="input" type="email" name="email" required autocomplete="email" placeholder="you@university.edu" />
+        <input class="input" type="password" name="password" required minlength="6" autocomplete="current-password" placeholder="Password" />
+        <button class="btn-primary" type="submit"><span>Sign in</span></button>
+      </form>
+      <div class="auth-links">
+        <button type="button" data-auth-mode="forgot">Forgot password?</button>
+        <span>·</span>
+        <button type="button" data-auth-mode="magic">Email me a sign-in link</button>
+      </div>
+      <p class="note" id="authMsg">${state.cloud.urlError ? esc(friendlyAuthError(state.cloud.urlError)) : ''}</p>
+    </div>`;
+  if (state.cloud.urlError) history.replaceState(null, '', `${location.pathname}${location.search}`);
+
+  const form = $('#authForm', el);
+  const pw = form.elements.password;
+  const submit = $('button[type="submit"]', form);
+  const msg = $('#authMsg', el);
+  let mode = 'signin';
+  const setMode = (m) => {
+    mode = m;
+    for (const b of $$('.auth-tabs [data-auth-mode]', el)) b.classList.toggle('active', b.dataset.authMode === m);
+    const needsPw = m === 'signin' || m === 'signup';
+    pw.hidden = !needsPw;
+    pw.required = needsPw;
+    pw.autocomplete = m === 'signup' ? 'new-password' : 'current-password';
+    pw.placeholder = m === 'signup' ? 'Choose a password (6+ characters)' : 'Password';
+    submit.querySelector('span').textContent = { signin: 'Sign in', signup: 'Create account', forgot: 'Email me a reset link', magic: 'Email me a sign-in link' }[m];
+    msg.textContent = '';
+    form.elements.email.focus();
+  };
+  for (const b of $$('[data-auth-mode]', el)) b.onclick = () => setMode(b.dataset.authMode);
+
+  for (const b of $$('[data-oauth]', el)) {
+    b.onclick = async () => {
+      b.disabled = true;
+      try {
+        await state.cloud.signInWithOAuth(b.dataset.oauth, back);
+      } catch (err) {
+        msg.textContent = friendlyAuthError(err);
+        b.disabled = false;
+      }
+    };
+  }
+
+  form.onsubmit = async (e) => {
     e.preventDefault();
-    const email = new FormData(e.target).get('email').trim();
-    const btn = $('button', e.target);
-    btn.disabled = true;
+    const email = form.elements.email.value.trim();
+    submit.disabled = true;
+    msg.textContent = '';
     try {
-      await state.cloud.sendMagicLink(email, `${location.origin}${location.pathname}${location.search}`);
-      $('#authMsg').innerHTML = `Check <b>${esc(email)}</b> for a sign-in link. Open it in this browser.`;
+      if (mode === 'signin') {
+        await state.cloud.signInWithPassword(email, pw.value);
+        return location.reload();
+      }
+      if (mode === 'signup') {
+        const r = await state.cloud.signUp(email, pw.value, back);
+        if (r.session) return location.reload();
+        msg.innerHTML = `Almost done: we sent a confirmation link to <b>${esc(email)}</b>. After that, you sign in with your password (no more emails).`;
+      } else if (mode === 'forgot') {
+        await state.cloud.sendPasswordReset(email, `${location.origin}${location.pathname}`);
+        msg.innerHTML = `If <b>${esc(email)}</b> has an account, a reset link is on its way.`;
+      } else {
+        await state.cloud.sendMagicLink(email, back);
+        msg.innerHTML = `Check <b>${esc(email)}</b> for a sign-in link. Open it in this browser.`;
+      }
     } catch (err) {
-      $('#authMsg').textContent = err.message;
-      btn.disabled = false;
+      msg.textContent = friendlyAuthError(err);
+    }
+    submit.disabled = false;
+  };
+  form.elements.email.focus();
+}
+
+/** After opening a password-reset link, or from the account menu. */
+function showSetPassword({ fromReset = true } = {}) {
+  const el = $('#authScreen');
+  el.hidden = false;
+  el.innerHTML = `
+    <form class="auth-card" id="pwForm">
+      <img src="/logo.svg" alt="" width="52" height="52" />
+      <h1>${fromReset ? 'Choose a new password' : 'Set a password'}</h1>
+      <p>${fromReset ? 'You’re signed in through your reset link. Pick a new password to finish.' : 'Then you can also sign in with your email and this password.'}</p>
+      <input class="input" type="password" name="pw" required minlength="6" autocomplete="new-password" placeholder="New password (6+ characters)" />
+      <input class="input" type="password" name="pw2" required minlength="6" autocomplete="new-password" placeholder="Repeat it" />
+      <button class="btn-primary" type="submit"><span>Save password</span></button>
+      ${fromReset ? '' : '<button class="btn-ghost" type="button" data-cancel>Cancel</button>'}
+      <p class="note" id="pwMsg"></p>
+    </form>`;
+  const form = $('#pwForm', el);
+  $('[data-cancel]', el)?.addEventListener('click', () => (el.hidden = true));
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const { pw, pw2 } = form.elements;
+    if (pw.value !== pw2.value) return ($('#pwMsg', el).textContent = 'The two passwords don’t match.');
+    try {
+      await state.cloud.updatePassword(pw.value);
+      if (fromReset) {
+        location.replace(location.pathname);
+      } else {
+        el.hidden = true;
+        toast('Password saved', 'ok');
+      }
+    } catch (err) {
+      $('#pwMsg', el).textContent = friendlyAuthError(err);
     }
   };
-  $('input', el).focus();
+  form.elements.pw.focus();
 }
 
 /** A hosted deployment has no disk, so it can't run without a database. */
@@ -1994,11 +2115,16 @@ function openAccountMenu() {
     `<div class="pop-title">Signed in as</div>
      <div class="pop-item"><span class="grow"><span>${esc(state.collab.displayName(u.email))}</span><span class="sub">${esc(u.email)}</span></span></div>
      <div class="pop-sep"></div>
+     <button class="pop-item" data-setpw>${icon('key')}<span class="grow">Set or change password</span></button>
      <button class="pop-item" data-signout>${icon('logout')}<span class="grow">Sign out</span></button>`,
   );
   const r = $('#accountBtn').getBoundingClientRect();
   pop.style.left = `${Math.max(10, r.right - pop.offsetWidth)}px`;
   pop.onclick = async (e) => {
+    if (e.target.closest('[data-setpw]')) {
+      closePopover();
+      return showSetPassword({ fromReset: false });
+    }
     if (!e.target.closest('[data-signout]')) return;
     closePopover();
     await state.ws?.flush().catch(() => {});
