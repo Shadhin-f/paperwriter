@@ -1036,6 +1036,25 @@ function zoom(dir) {
 }
 
 $('#pdfScroll').addEventListener('scroll', updatePageInd, { passive: true });
+
+// Click text in the PDF to jump to the source line that produced it (SyncTeX).
+$('#pdfScroll').addEventListener('click', async (e) => {
+  const pageEl = e.target.closest('.pdf-page');
+  if (!pageEl || !state.project || getSelection().toString()) return;
+  const rect = pageEl.getBoundingClientRect();
+  const x = (e.clientX - rect.left) / state.pdfScale;
+  const y = (e.clientY - rect.top) / state.pdfScale;
+  try {
+    const r = await api(`/api/projects/${P()}/synctex?page=${pageEl.dataset.page}&x=${x.toFixed(2)}&y=${y.toFixed(2)}`);
+    if (!r.found) return toast('Couldn’t find that spot in the source. Try recompiling.', '', 2500);
+    if (prefs.editorMode === 'visual') setEditorMode('code');
+    await jumpTo(r.file, r.line);
+    const h = cm.addLineClass(r.line - 1, 'background', 'sync-flash');
+    setTimeout(() => cm.removeLineClass(h, 'background', 'sync-flash'), 1600);
+  } catch (err) {
+    toast(err.message, 'err');
+  }
+});
 $('#pdfScroll').addEventListener(
   'wheel',
   (e) => {

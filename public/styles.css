@@ -831,3 +831,7 @@ body.guest .compile-group .btn-primary:first-child { border-radius: 12px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* PDF → source jump */
+.pdf-page canvas { cursor: pointer; }
+.sync-flash { background: color-mix(in srgb, var(--amber) 28%, transparent); transition: background 1s; }

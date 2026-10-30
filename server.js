@@ -10,6 +10,7 @@ import * as access from './lib/access.js';
 import { attachCollab, room, flushProject, closeRoom, kickGuests } from './lib/rooms.js';
 import * as network from './lib/network.js';
 import { importProject } from './lib/importer.js';
+import { inverseSearch } from './lib/synctex.js';
 
 const PORT = Number(process.env.PORT) || 5178;
 
@@ -246,6 +247,17 @@ route('GET', '/api/projects/:p/pdf', async (req, { who, params }) => {
   access.requireProject(who, params.p);
   const meta = await projects.getMeta(params.p);
   return { __file: path.join(projects.projectDir(params.p), '.out', path.basename(meta.main, '.tex') + '.pdf'), __headers: { 'Cache-Control': 'no-store' } };
+});
+
+/** Click in the PDF → source file and line (SyncTeX). */
+route('GET', '/api/projects/:p/synctex', async (req, { who, params, url }) => {
+  access.requireProject(who, params.p);
+  const { main } = await projects.getMeta(params.p);
+  const num = (k) => Number(url.searchParams.get(k));
+  const [page, x, y] = [num('page'), num('x'), num('y')];
+  if (!Number.isInteger(page) || page < 1 || !Number.isFinite(x) || !Number.isFinite(y)) throw new HttpError(400, 'page, x and y are required');
+  const hit = await inverseSearch(projects.projectDir(params.p), main, page, x, y);
+  return hit ? { found: true, ...hit } : { found: false };
 });
 
 /* ───────── sharing (owner) ───────── */
