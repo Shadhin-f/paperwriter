@@ -1739,10 +1739,16 @@ async function boot() {
   }
   try {
     state.me = await api('/api/me');
-    state.collab = await import('./collab.js');
   } catch (e) {
     $('#authScreen').hidden = true;
     return toast(`Couldn't reach the PaperWriter server: ${e.message}`, 'err', 8000);
+  }
+  try {
+    state.collab = await import('./collab.js');
+  } catch (e) {
+    // Usually a stale copy of an older version still in the browser cache.
+    $('#authScreen').hidden = true;
+    return toast(`PaperWriter couldn't load part of the app (${e.message}). Press Ctrl+Shift+R to reload it.`, 'err', 15000);
   }
   if (!state.me.owner && !state.me.projects.length) return showPrivate();
   $('#authScreen').hidden = true;

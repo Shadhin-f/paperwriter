@@ -1,5 +1,5 @@
 // Live co-editing with this PaperWriter server: a Yjs document per project, synced over WebSocket.
-import { Y, WebsocketProvider, CodemirrorBinding } from '/vendor/collab.js';
+import { Y, WebsocketProvider, CodemirrorBinding } from '/vendor/sync.js';
 
 export { CodemirrorBinding, Y };
 

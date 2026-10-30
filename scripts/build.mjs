@@ -47,7 +47,7 @@ const useGlobalCodeMirror = {
 
 await build({
   entryPoints: [path.join(ROOT, 'src', 'collab-entry.js')],
-  outfile: path.join(OUT, 'collab.js'),
+  outfile: path.join(OUT, 'sync.js'),
   bundle: true,
   format: 'esm',
   minify: true,
