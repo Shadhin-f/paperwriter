@@ -31,23 +31,20 @@ Allow about 15 minutes.
 > "You have been invited" email. Without it they get a regular sign-in link, which works just as well.
 > The key bypasses all security rules, so only ever put it in server environment variables (Vercel or `.env`), never in code.
 
-### Sign-in methods (avoid email limits)
+### Google sign-in (required)
 
-The sign-in screen offers **email + password**, **"Email me a sign-in link"**, and a **Continue with Google / GitHub** button for each provider you switch on.
-Buttons appear automatically, with no code change. Logging in with a password, Google or GitHub sends no email.
-Supabase only emails once, to confirm a new password account. Keep **Confirm email** on: projects are shared by email address,
-so confirmation is what stops someone from claiming a collaborator's address.
+PaperWriter signs people in with **Continue with Google** only, so logging in never sends an email.
+Supabase only emails people when you invite them, and they then open the project and continue with Google.
 
-**Google** (Supabase → Authentication → Sign In / Providers → Google):
-1. In <https://console.cloud.google.com/apis/credentials>, create a project if asked, then **Create credentials → OAuth client ID → Web application**.
-   (You may first need to fill in the **OAuth consent screen**: app name, your email, and *External* audience.)
-2. Under **Authorized redirect URIs**, add `https://YOUR-PROJECT-ID.supabase.co/auth/v1/callback`.
-   Supabase shows this exact URL on its Google provider page.
-3. Paste the **Client ID** and **Client secret** into Supabase's Google provider and enable it.
+1. In <https://console.cloud.google.com/apis/credentials>, create a project if asked.
+   Fill in the **OAuth consent screen**: app name *PaperWriter*, your email, audience **External**.
+   While the app is in *Testing*, add each person's Gmail under **Test users**, or click **Publish app** so anyone can sign in.
+2. **Create credentials → OAuth client ID → Web application**:
+   - **Authorized JavaScript origins:** your site, e.g. `https://paperwriter-eight.vercel.app` (and `http://localhost:5178` for local use)
+   - **Authorized redirect URIs:** `https://YOUR-PROJECT-ID.supabase.co/auth/v1/callback` (Supabase shows this exact URL on its Google provider page)
+3. In Supabase → **Authentication → Sign In / Providers → Google**, paste the **Client ID** and **Client secret** and switch it on.
 
-**GitHub** (Supabase → Authentication → Sign In / Providers → GitHub):
-1. <https://github.com/settings/developers> → **New OAuth App**. Set Homepage URL to your site, and Authorization callback URL to the same `…supabase.co/auth/v1/callback`.
-2. **Generate a new client secret**, then paste the Client ID and secret into Supabase and enable it.
+The "Continue with Google" button works as soon as the provider is on, with no redeploy needed.
 
 ## 2. GitHub
 
@@ -86,7 +83,7 @@ Every `git push` to `main` now redeploys automatically.
 
 ## 4. Try it
 
-1. Open your Vercel URL, enter your email and click the link you receive. You're signed in, with a starter paper ready.
+1. Open your Vercel URL and click **Continue with Google**. You're signed in, with a starter paper ready.
 2. Click **Share** in the top bar:
    - **Invite by email** as an *Editor* or *Viewer*. They get an email and land straight in the project.
    - **General access → Anyone with the link can edit/view**, then **Copy link**. Anyone who signs in through it joins.

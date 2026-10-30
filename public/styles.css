@@ -633,21 +633,12 @@ select.input { appearance: none; background-image: linear-gradient(45deg, transp
 .auth-card .input { height: 44px; font-size: 15px; }
 .auth-card .btn-primary { height: 44px; justify-content: center; }
 .auth-card .note { min-height: 1.2em; margin: 0; }
-.auth-card .btn-ghost { height: 40px; }
 .btn-oauth {
   display: flex; align-items: center; justify-content: center; gap: 10px; height: 44px; border-radius: 12px;
   border: 1px solid var(--line-2); background: var(--panel); font-weight: 700; font-size: 14px; transition: background 0.15s, border-color 0.15s;
 }
 .btn-oauth:hover { background: var(--panel-2); border-color: var(--text-3); }
 .btn-oauth[disabled] { opacity: 0.6; cursor: progress; }
-.auth-sep { display: flex; align-items: center; gap: 10px; color: var(--text-3); font-size: 12px; font-weight: 700; margin: 2px 0; }
-.auth-sep::before, .auth-sep::after { content: ''; flex: 1; height: 1px; background: var(--line); }
-.auth-tabs { padding: 0; }
-.auth-tabs .seg-btn { height: 36px; }
-.auth-form { display: flex; flex-direction: column; gap: 10px; }
-.auth-links { display: flex; justify-content: center; gap: 8px; font-size: 12.5px; color: var(--text-3); flex-wrap: wrap; }
-.auth-links button { color: var(--text-2); font-weight: 700; }
-.auth-links button:hover { color: var(--text); text-decoration: underline; }
 
 /* ───────────── visual editor ───────────── */
 .seg.mini { padding: 0 0 0 8px; gap: 2px; }
