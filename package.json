@@ -1,0 +1,29 @@
+{
+  "name": "paperwriter",
+  "version": "1.0.0",
+  "description": "A cute, local LaTeX editor & compiler with an AI co-author (Claude, ChatGPT, Gemini, Ollama, Claude Code CLI).",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "prestart": "npm run build",
+    "start": "node --env-file-if-exists=.env server.js",
+    "dev": "npm run build && node --env-file-if-exists=.env --watch server.js"
+  },
+  "engines": {
+    "node": ">=22.9"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.118.0",
+    "codemirror": "^5.65.21",
+    "katex": "^0.19.1",
+    "pdfjs-dist": "^6.4.299",
+    "y-codemirror": "^3.0.1",
+    "y-protocols": "^1.0.7",
+    "yjs": "^13.6.33"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

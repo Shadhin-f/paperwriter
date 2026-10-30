@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>PaperWriter</title>
+  <link rel="icon" href="/logo.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/vendor/codemirror/lib/codemirror.css" />
+  <link rel="stylesheet" href="/vendor/codemirror/addon/dialog/dialog.css" />
+  <link rel="stylesheet" href="/vendor/katex/katex.min.css" />
+  <link rel="stylesheet" href="/styles.css" />
+  <script>
+    // Apply the saved theme before first paint to avoid a flash.
+    try {
+      const t = JSON.parse(localStorage.getItem('pw.prefs') || '{}').theme || 'system';
+      const dark = t === 'dark' || (t === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+      document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    } catch {}
+  </script>
+  <script src="/vendor/codemirror/lib/codemirror.js"></script>
+  <script src="/vendor/codemirror/mode/stex/stex.js"></script>
+  <script src="/vendor/codemirror/addon/edit/matchbrackets.js"></script>
+  <script src="/vendor/codemirror/addon/edit/closebrackets.js"></script>
+  <script src="/vendor/codemirror/addon/search/searchcursor.js"></script>
+  <script src="/vendor/codemirror/addon/dialog/dialog.js"></script>
+  <script src="/vendor/codemirror/addon/search/search.js"></script>
+  <script src="/vendor/codemirror/addon/selection/active-line.js"></script>
+  <script src="/vendor/codemirror/addon/comment/comment.js"></script>
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="/logo.svg" alt="" width="30" height="30" />
+      <span class="brand-name">Paper<b>Writer</b></span>
+    </div>
+    <button class="chip-btn project-btn" id="projectBtn" title="Switch project">
+      <i data-icon="folder"></i><span id="projectName">…</span><i data-icon="chevron"></i>
+    </button>
+    <div class="spacer"></div>
+    <div class="presence" id="presence"></div>
+    <span class="role-chip" id="roleChip" hidden><i data-icon="eye"></i>View only</span>
+    <span class="save-status" id="saveStatus" data-state="saved"><i data-icon="check"></i><span>Saved</span></span>
+    <button class="btn-ghost share-btn" id="shareBtn" title="Share this project"><i data-icon="users"></i><span>Share</span></button>
+    <div class="compile-group">
+      <button class="btn-primary" id="compileBtn" title="Compile (Ctrl+S / Ctrl+Enter)">
+        <i data-icon="play"></i><span>Compile</span>
+      </button>
+      <button class="btn-primary caret" id="compileMenuBtn" title="Compiler options"><i data-icon="chevron"></i></button>
+    </div>
+    <button class="icon-btn" id="themeBtn" title="Toggle theme"><i data-icon="moon"></i></button>
+    <button class="icon-btn" id="settingsBtn" title="Settings"><i data-icon="settings"></i></button>
+    <button class="avatar-btn" id="accountBtn" title="Account" hidden></button>
+  </header>
+
+  <main class="workspace" id="workspace" data-view="editor">
+    <aside class="panel side-panel" id="sidePanel">
+      <div class="seg" role="tablist">
+        <button class="seg-btn active" data-side="chat"><i data-icon="sparkle"></i>Chat</button>
+        <button class="seg-btn" data-side="files"><i data-icon="files"></i>Files</button>
+      </div>
+
+      <section class="chat-view" id="chatView">
+        <div class="chat-head">
+          <button class="model-pill" id="modelBtn" title="Choose AI model">
+            <span class="dot" id="modelDot"></span>
+            <span class="model-text"><b id="providerLabel">…</b><small id="modelLabel">…</small></span>
+            <i data-icon="chevron"></i>
+          </button>
+          <button class="icon-btn small" id="newChatBtn" title="New chat"><i data-icon="plus"></i></button>
+        </div>
+        <div class="messages" id="messages"></div>
+        <div class="composer" id="composer">
+          <div class="ctx-chips" id="ctxChips"></div>
+          <textarea id="prompt" rows="1" placeholder="Ask your co-author to write or edit…"></textarea>
+          <div class="composer-foot">
+            <label class="toggle" title="Apply AI edits to the file automatically (you can always revert)">
+              <input type="checkbox" id="autoApply" /><span class="track"></span><span>Auto-apply</span>
+            </label>
+            <span class="hint">Enter ↵ send · Shift+Enter newline</span>
+            <button class="send-btn" id="sendBtn" title="Send"><i data-icon="send"></i></button>
+          </div>
+        </div>
+      </section>
+
+      <section class="files-view" id="filesView" hidden>
+        <div class="files-toolbar">
+          <button class="chip-btn" id="newFileBtn"><i data-icon="plus"></i>New file</button>
+          <label class="chip-btn" id="uploadBtn"><i data-icon="upload"></i>Upload<input type="file" id="uploadInput" multiple hidden /></label>
+        </div>
+        <ul class="file-list" id="fileList"></ul>
+        <p class="files-tip">Tip: drop images or .bib files here. The <i data-icon="star"></i> file is compiled.</p>
+      </section>
+    </aside>
+
+    <div class="gutter" data-resize="left" title="Drag to resize"></div>
+
+    <section class="panel editor-panel" id="editorPanel">
+      <div class="panel-head">
+        <div class="file-tab"><i data-icon="file"></i><span id="currentFileName">main.tex</span><span class="dirty-dot" id="dirtyDot"></span></div>
+        <div class="seg mini" role="tablist" aria-label="Editor mode">
+          <button class="seg-btn active" data-mode="code" title="Edit the LaTeX source">Code</button>
+          <button class="seg-btn" data-mode="visual" title="Type directly on the page and drag blocks to reorder">Visual</button>
+        </div>
+        <div class="spacer"></div>
+        <button class="icon-btn small" id="findBtn" title="Find (Ctrl+F)"><i data-icon="search"></i></button>
+        <button class="icon-btn small" id="undoBtn" title="Undo (Ctrl+Z)"><i data-icon="undo"></i></button>
+        <button class="icon-btn small" id="redoBtn" title="Redo (Ctrl+Y)"><i data-icon="redo"></i></button>
+        <button class="icon-btn small" id="askSelBtn" title="Ask AI about selection (Ctrl+K)"><i data-icon="sparkle"></i></button>
+      </div>
+      <div class="editor-host" id="editor"></div>
+      <div class="visual-host" id="visual" hidden></div>
+      <div class="statusbar">
+        <span id="cursorPos">Ln 1, Col 1</span>
+        <span id="wordCount">0 words</span>
+        <span class="spacer"></span>
+        <span id="engineLabel">auto</span>
+      </div>
+    </section>
+
+    <div class="gutter" data-resize="right" title="Drag to resize"></div>
+
+    <section class="panel pdf-panel" id="pdfPanel">
+      <div class="panel-head">
+        <span class="page-ind" id="pageInd">–</span>
+        <div class="spacer"></div>
+        <button class="icon-btn small" id="zoomOutBtn" title="Zoom out"><i data-icon="minus"></i></button>
+        <button class="chip-btn zoom-label" id="zoomFitBtn" title="Fit width">Fit</button>
+        <button class="icon-btn small" id="zoomInBtn" title="Zoom in"><i data-icon="plus"></i></button>
+        <a class="icon-btn small" id="downloadBtn" title="Download PDF" download="paper.pdf"><i data-icon="download"></i></a>
+      </div>
+      <div class="pdf-scroll" id="pdfScroll">
+        <div class="pdf-pages" id="pdfPages"></div>
+        <div class="pdf-empty" id="pdfEmpty">
+          <img src="/logo.svg" alt="" width="72" height="72" class="bob" />
+          <h3>No PDF yet</h3>
+          <p>Press <kbd>Ctrl</kbd> + <kbd>S</kbd> to compile your paper.</p>
+        </div>
+        <div class="pdf-busy" id="pdfBusy" hidden><span class="spinner"></span><span id="busyText">Compiling…</span></div>
+      </div>
+      <div class="log-drawer" id="logDrawer">
+        <button class="log-bar" id="logBar">
+          <span class="log-state" id="logState"><i data-icon="info"></i><span>Not compiled yet</span></span>
+          <span class="spacer"></span>
+          <i data-icon="chevron" class="flip"></i>
+        </button>
+        <div class="log-body">
+          <div class="seg small">
+            <button class="seg-btn active" data-log="issues">Issues</button>
+            <button class="seg-btn" data-log="raw">Raw log</button>
+            <span class="spacer"></span>
+            <button class="chip-btn accent" id="fixErrorsBtn" hidden><i data-icon="sparkle"></i>Fix with AI</button>
+          </div>
+          <ul class="issue-list" id="issueList"></ul>
+          <pre class="raw-log" id="rawLog" hidden></pre>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <nav class="mobile-nav" id="mobileNav">
+    <button data-view="chat"><i data-icon="sparkle"></i><span>Chat</span></button>
+    <button data-view="editor" class="active"><i data-icon="code"></i><span>Code</span></button>
+    <button data-view="pdf"><i data-icon="file"></i><span>PDF</span></button>
+    <button data-view="files"><i data-icon="files"></i><span>Files</span></button>
+  </nav>
+
+  <div class="auth-screen" id="authScreen" hidden></div>
+  <div class="popover" id="popover" hidden></div>
+  <div class="modal-backdrop" id="modal" hidden></div>
+  <div class="toasts" id="toasts"></div>
+</body>
+</html>
