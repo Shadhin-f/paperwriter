@@ -102,36 +102,18 @@ const state = {
   useSelection: true,
   useErrors: true,
   errorLines: [],
-  // cloud mode
-  config: {},
-  collab: null, // the cloud.js module
-  cloud: null,
+  // live session
+  me: null, // { owner: true } or { owner: false, projects: [{ name, role, ai }] }
+  collab: null, // the collab.js module
   ws: null, // open Workspace
   binding: null,
   role: 'owner',
-  projects: [],
+  ai: true,
   people: [],
 };
 
-const userKeys = () => {
-  try {
-    return JSON.parse(localStorage.getItem('pw.userKeys') || '{}');
-  } catch {
-    return {};
-  }
-};
-
-/** Signed-in user's token (cloud mode) and any API keys they saved in this browser. */
-function authHeaders() {
-  const h = {};
-  const t = state.cloud?.token();
-  if (t) h.Authorization = `Bearer ${t}`;
-  const keys = userKeys();
-  if (Object.keys(keys).length) h['x-pw-keys'] = btoa(JSON.stringify(keys));
-  return h;
-}
-
-const canEdit = () => !state.ws || state.ws.canEdit;
+const isOwner = () => !!state.me?.owner;
+const canEdit = () => !!state.ws?.canEdit;
 
 const PROVIDER_ORDER = ['claude-cli', 'anthropic', 'openai', 'gemini', 'ollama', 'compat', 'gemini-cli', 'codex-cli'];
 const PREFERRED_MODEL = { 'claude-cli': 'sonnet', anthropic: 'claude-sonnet-5-5', openai: 'gpt-5', gemini: 'gemini-2.5-pro', 'gemini-cli': 'default', 'codex-cli': 'default' };
@@ -143,7 +125,7 @@ async function api(path, { method = 'GET', body, headers = {} } = {}) {
   const isRaw = typeof body === 'string' || body instanceof Blob || body instanceof ArrayBuffer;
   const res = await fetch(path, {
     method,
-    headers: { ...authHeaders(), ...(body && !isRaw ? { 'content-type': 'application/json' } : {}), ...headers },
+    headers: { ...(body && !isRaw ? { 'content-type': 'application/json' } : {}), ...headers },
     body: body == null ? undefined : isRaw ? body : JSON.stringify(body),
   });
   const ct = res.headers.get('content-type') || '';
@@ -369,7 +351,6 @@ const cm = CodeMirror($('#editor'), {
 });
 cm.setOption('readOnly', 'nocursor');
 
-let saveTimer = 0;
 let compileTimer = 0;
 let statsTimer = 0;
 
@@ -378,22 +359,8 @@ cm.on('changes', (_cm, changes) => {
   clearTimeout(statsTimer);
   statsTimer = setTimeout(updateStats, 300);
   if (changes.every((c) => c.origin === 'setValue')) return;
-  if (state.ws) {
-    // Cloud: Yjs syncs and saves; we only recompile.
-    if (prefs.autoCompile) scheduleCompile(1500);
-    return;
-  }
-  updateDirty();
-  clearTimeout(saveTimer);
-  const doc = cm.getDoc();
-  saveTimer = setTimeout(async () => {
-    try {
-      await saveDoc(doc);
-      if (prefs.autoCompile) scheduleCompile();
-    } catch {}
-  }, 900);
-  clearTimeout(statsTimer);
-  statsTimer = setTimeout(updateStats, 300);
+  // Edits (yours or a collaborator's) are synced and saved by the server; we only recompile.
+  if (prefs.autoCompile && state.ws) scheduleCompile(1500);
 });
 cm.on('cursorActivity', () => {
   const c = cm.getCursor();
@@ -405,24 +372,14 @@ function modeFor(path) {
   return /\.(tex|sty|cls|bib|ltx|dtx|bbx|cbx|def|tikz)$/i.test(path) ? 'stex' : 'text/plain';
 }
 
-function updateDirty() {
-  if (state.ws) return;
-  const doc = cm.getDoc();
-  const dirty = doc.pwFile && !doc.isClean(doc.pwGen);
-  $('#dirtyDot').classList.toggle('on', !!dirty);
-  const anyDirty = [...state.docs.values()].some((d) => !d.isClean(d.pwGen));
-  if (anyDirty) setSaveStatus('dirty');
-}
-
 function setSaveStatus(s) {
   const el = $('#saveStatus');
   el.dataset.state = s;
   const map = {
     saved: ['check', 'Saved'],
-    dirty: ['pencil', 'Editing…'],
     saving: ['refresh', 'Saving…'],
     error: ['alert', 'Save failed'],
-    offline: ['alert', 'Offline · saving locally'],
+    offline: ['alert', 'Reconnecting…'],
     connecting: ['refresh', 'Connecting…'],
     viewonly: ['eye', 'View only'],
   };
@@ -430,31 +387,13 @@ function setSaveStatus(s) {
   el.innerHTML = `${icon(ic)}<span>${label}</span>`;
 }
 
-async function saveDoc(doc) {
-  if (!doc?.pwFile || doc.isClean(doc.pwGen)) return;
-  const gen = doc.changeGeneration();
-  setSaveStatus('saving');
-  try {
-    await api(`/api/projects/${P()}/file?path=${enc(doc.pwFile)}`, {
-      method: 'PUT',
-      body: doc.getValue(),
-      headers: { 'content-type': 'text/plain; charset=utf-8' },
-    });
-    doc.pwGen = gen;
-    const anyDirty = [...state.docs.values()].some((d) => !d.isClean(d.pwGen));
-    setSaveStatus(anyDirty ? 'dirty' : 'saved');
-    updateDirty();
-  } catch (e) {
-    setSaveStatus('error');
-    toast(`Couldn't save ${doc.pwFile}: ${e.message}`, 'err');
-    throw e;
-  }
-}
+/** Edits are saved by the server as they sync; there is nothing to flush from the browser. */
+async function saveAll() {}
 
-async function saveAll() {
-  if (state.ws) return state.ws.flush();
-  clearTimeout(saveTimer);
-  for (const d of state.docs.values()) await saveDoc(d);
+/** Server-side file operations reach us over the live connection; wait for them before using the file. */
+async function waitFor(cond, ms = 3000) {
+  const end = Date.now() + ms;
+  while (!cond() && Date.now() < end) await sleep(40);
 }
 
 function updateStats() {
@@ -472,50 +411,35 @@ function updateStats() {
 
 async function openFile(path) {
   const f = state.files.find((x) => x.path === path);
-  if (!f) return;
+  if (!f || !state.ws) return;
   if (f.kind !== 'text') return previewAsset(f);
-  if (state.ws) {
-    // Cloud: bind the editor to this file's shared Y.Text (with live cursors and per-user undo).
-    state.binding?.destroy();
-    const doc = CodeMirror.Doc('', modeFor(path));
-    doc.pwFile = path;
-    cm.swapDoc(doc);
-    state.file = path;
-    state.binding = new state.collab.CodemirrorBinding(state.ws.text(path), cm, state.ws.awareness, { yUndoManager: state.ws.undoManager(path) });
-    cm.setOption('readOnly', state.ws.canEdit ? false : true);
-  } else {
-    let doc = state.docs.get(path);
-    if (!doc) {
-      const { content } = await api(`/api/projects/${P()}/file?path=${enc(path)}`);
-      doc = CodeMirror.Doc(content, modeFor(path));
-      doc.pwFile = path;
-      doc.pwGen = doc.changeGeneration();
-      state.docs.set(path, doc);
-    }
-    state.file = path;
-    cm.swapDoc(doc);
-    cm.setOption('readOnly', false);
-  }
+  // Bind the editor to this file's shared text: live cursors, and undo that only undoes your own edits.
+  state.binding?.destroy();
+  const doc = CodeMirror.Doc('', modeFor(path));
+  doc.pwFile = path;
+  cm.swapDoc(doc);
+  state.file = path;
+  state.binding = new state.collab.CodemirrorBinding(state.ws.text(path), cm, state.ws.awareness, { yUndoManager: state.ws.undoManager(path) });
+  cm.setOption('readOnly', state.ws.canEdit ? false : true);
   prefs.lastFiles[state.project] = path;
   savePrefs();
   $('#currentFileName').textContent = path;
   renderFiles();
   markErrors();
-  updateDirty();
   updateStats();
   renderCtxChips();
   applyEditorMode();
 }
 
-async function previewAsset(f) {
-  const url = state.ws ? await state.ws.fileUrl(f.path) : `/api/projects/${P()}/file?path=${enc(f.path)}&raw=1`;
+function previewAsset(f) {
+  const url = state.ws.fileUrl(f.path);
   if (f.kind === 'image' && !/\.(pdf|eps)$/i.test(f.path)) {
     openModal(
       `<div class="modal-head">${icon('image')}<h2>${esc(f.path)}</h2><button class="icon-btn" data-close>${icon('x')}</button></div>
        <div class="modal-body" style="text-align:center"><img src="${url}" alt="" style="max-width:100%;border-radius:12px" />
        <p class="note">Use it with <code>\\includegraphics[width=\\linewidth]{${esc(f.path)}}</code></p></div>`,
     );
-  } else window.open(url, '_blank');
+  } else window.open(url, '_blank', 'noopener');
 }
 
 function askAboutSelection() {
@@ -529,45 +453,62 @@ function askAboutSelection() {
 /* ───────────────────────── projects & files ───────────────────────── */
 
 async function loadProject(name) {
-  if (state.cloud) return loadCloudProject(name);
-  if (state.project) await saveAll().catch(() => {});
-  state.project = name;
-  state.docs.clear();
-  state.file = null;
-  state.errors = [];
-  state.warnings = [];
-  state.lastResult = null;
-  state.log = '';
+  if (state.ws) {
+    state.binding?.destroy();
+    state.binding = null;
+    state.ws.destroy();
+    state.ws = null;
+  }
+  const grant = isOwner() ? { role: 'owner', ai: true } : state.me.projects.find((p) => p.name === name);
+  if (!grant) throw new Error('You don’t have access to that project.');
+  Object.assign(state, { project: name, role: grant.role, ai: grant.ai, file: null, files: [], errors: [], warnings: [], lastResult: null, log: '', people: [] });
   prefs.lastProject = name;
   savePrefs();
   $('#projectName').textContent = name;
   document.title = `${name} · PaperWriter`;
+  $('#roleChip').hidden = grant.role !== 'viewer';
+  renderPresence();
   loadChat();
+  renderChatAccess();
   renderLog();
-  await refreshFiles();
-  const last = prefs.lastFiles[name];
-  const target = state.files.some((f) => f.path === last) ? last : state.meta.main;
-  if (state.files.some((f) => f.path === target)) await openFile(target);
-  else {
-    cm.swapDoc(CodeMirror.Doc('', 'stex'));
-    cm.setOption('readOnly', 'nocursor');
-  }
   clearPdf();
+  renderFiles();
+  cm.swapDoc(CodeMirror.Doc('', 'stex'));
+  cm.setOption('readOnly', 'nocursor');
+  setSaveStatus('connecting');
+
+  const ws = new state.collab.Workspace(name, { role: grant.role, me: myIdentity(), api });
+  state.ws = ws;
+  ws.on('status', renderSyncStatus);
+  ws.on('presence', (people) => {
+    state.people = people;
+    renderPresence();
+  });
+  ws.files.observe(() => {
+    if (state.ws !== ws) return;
+    refreshFiles();
+    if (state.file && !ws.files.has(state.file)) {
+      const next = ws.main();
+      if (ws.files.has(next)) openFile(next);
+    }
+  });
+  ws.meta.observe(() => state.ws === ws && refreshFiles());
+  await ws.connect();
+  if (state.ws !== ws) return;
+  renderSyncStatus();
+  refreshFiles();
+  const last = prefs.lastFiles[name];
+  const target = state.files.some((f) => f.path === last && f.kind === 'text') ? last : state.meta.main;
+  if (state.files.some((f) => f.path === target)) await openFile(target);
   const existing = loadPdf(`/api/projects/${P()}/pdf?t=${Date.now()}`, true);
   if (state.status && hasAnyEngine()) compile();
   else if (!(await existing)) showNoEngine();
 }
 
-async function refreshFiles() {
-  if (state.ws) {
-    state.files = state.ws.fileList();
-    state.meta = { main: state.ws.main() };
-    renderFiles();
-    return;
-  }
-  const { files, meta } = await api(`/api/projects/${P()}/files`);
-  state.files = files;
-  state.meta = meta;
+function refreshFiles() {
+  if (!state.ws) return;
+  state.files = state.ws.fileList();
+  state.meta = { main: state.ws.main() };
   renderFiles();
 }
 
@@ -596,6 +537,8 @@ function renderFiles() {
       </li>`;
     })
     .join('');
+  $('#newFileBtn').hidden = !canEdit();
+  $('#uploadBtn').hidden = !canEdit();
 }
 
 $('#fileList').addEventListener('click', async (e) => {
@@ -605,43 +548,20 @@ $('#fileList').addEventListener('click', async (e) => {
   const act = e.target.closest('[data-fact]')?.dataset.fact;
   try {
     if (act === 'main') {
-      if (state.ws) state.ws.setMain(path);
-      else await api(`/api/projects/${P()}/meta`, { method: 'POST', body: { main: path } });
-      await refreshFiles();
+      await state.ws.setMain(path);
+      await waitFor(() => state.ws.main() === path);
       toast(`${path} is now the main file`, 'ok');
       compile();
     } else if (act === 'rename') {
       const to = await askText('Rename file', { value: path, okLabel: 'Rename' });
       if (!to || to === path) return;
-      await saveAll();
-      if (state.ws) {
-        await state.ws.rename(path, to);
-        await refreshFiles();
-        if (state.file === path) await openFile(to);
-        return;
-      }
-      await api(`/api/projects/${P()}/rename`, { method: 'POST', body: { from: path, to } });
-      const doc = state.docs.get(path);
-      if (doc) {
-        state.docs.delete(path);
-        doc.pwFile = to;
-        state.docs.set(to, doc);
-      }
-      if (state.file === path) {
-        state.file = to;
-        $('#currentFileName').textContent = to;
-      }
-      await refreshFiles();
+      await state.ws.rename(path, to);
+      await waitFor(() => state.ws.files.has(to));
+      refreshFiles();
+      if (state.file === path) await openFile(to);
     } else if (act === 'delete') {
-      if (!(await confirmBox('Delete file?', `"${path}" will be removed from this project.`))) return;
-      if (state.ws) await state.ws.remove(path);
-      else await api(`/api/projects/${P()}/file?path=${enc(path)}`, { method: 'DELETE' });
-      state.docs.delete(path);
-      await refreshFiles();
-      if (state.file === path) {
-        const next = state.files.find((f) => f.path === state.meta.main) || state.files.find((f) => f.kind === 'text');
-        if (next) await openFile(next.path);
-      }
+      if (!(await confirmBox('Delete file?', `"${path}" will be removed from this project for everyone.`))) return;
+      await state.ws.remove(path);
     } else {
       await openFile(path);
       if (isMobile() && state.files.find((f) => f.path === path)?.kind === 'text') setView('editor');
@@ -655,10 +575,9 @@ async function newFile() {
   const name = await askText('New file', { placeholder: 'e.g. sections/intro.tex or refs.bib', okLabel: 'Create' });
   if (!name) return;
   try {
-    const starter = name.endsWith('.tex') ? `% ${name}\n` : '';
-    if (state.ws) state.ws.createText(name, starter);
-    else await api(`/api/projects/${P()}/file?path=${enc(name)}`, { method: 'PUT', body: starter, headers: { 'content-type': 'text/plain' } });
-    await refreshFiles();
+    await state.ws.createText(name, name.endsWith('.tex') ? `% ${name}\n` : '');
+    await waitFor(() => state.ws.files.has(name));
+    refreshFiles();
     await openFile(name);
     if (isMobile()) setView('editor');
   } catch (e) {
@@ -667,34 +586,38 @@ async function newFile() {
 }
 
 async function uploadFiles(list) {
+  if (!canEdit()) return toast('This link only allows viewing.', 'err');
   for (const f of list) {
     try {
-      if (state.ws) await state.ws.upload(f.name, f);
-      else await api(`/api/projects/${P()}/file?path=${enc(f.name)}`, { method: 'PUT', body: await f.arrayBuffer(), headers: { 'content-type': 'application/octet-stream' } });
+      await state.ws.upload(f.name, f);
       toast(`Uploaded ${f.name}`, 'ok');
     } catch (e) {
       toast(`${f.name}: ${e.message}`, 'err');
     }
   }
-  await refreshFiles();
 }
 
 async function openProjectMenu() {
-  if (state.cloud) return openCloudProjectMenu();
-  const { projects } = await api('/api/projects');
+  const guest = !isOwner();
+  const projects = guest ? state.me.projects : (await api('/api/projects')).projects;
+  const roleText = { editor: 'Can edit', viewer: 'Can view' };
   const pop = openPopover(
     $('#projectBtn'),
-    `<div class="pop-title">Projects</div>
+    `<div class="pop-title">${guest ? 'Shared with you' : 'Projects'}</div>
      ${projects
        .map(
          (p) => `<button class="pop-item ${p.name === state.project ? 'active' : ''}" data-proj="${esc(p.name)}">
-           ${icon('folder')}<span class="grow"><span>${esc(p.name)}</span><span class="sub">${new Date(p.modified).toLocaleDateString()}</span></span>
+           ${icon(guest ? 'users' : 'folder')}<span class="grow"><span>${esc(p.name)}</span><span class="sub">${guest ? roleText[p.role] : new Date(p.modified).toLocaleDateString()}</span></span>
            ${p.name === state.project ? `<span class="check">${icon('check')}</span>` : ''}</button>`,
        )
        .join('')}
-     <div class="pop-sep"></div>
+     ${
+       guest
+         ? ''
+         : `<div class="pop-sep"></div>
      <button class="pop-item" data-pact="new">${icon('plus')}<span class="grow">New project…</span></button>
-     <button class="pop-item btn-danger" data-pact="delete">${icon('trash')}<span class="grow">Delete “${esc(state.project)}”…</span></button>`,
+     <button class="pop-item btn-danger" data-pact="delete">${icon('trash')}<span class="grow">Delete “${esc(state.project)}”…</span></button>`
+     }`,
   );
   pop.onclick = async (e) => {
     const item = e.target.closest('[data-proj],[data-pact]');
@@ -711,9 +634,9 @@ async function openProjectMenu() {
         if (!r?.value) return;
         const { name } = await api('/api/projects', { method: 'POST', body: { name: r.value, template: r.template } });
         await loadProject(name);
-        toast('Project created ✨', 'ok');
+        toast('Project created', 'ok');
       } else if (item.dataset.pact === 'delete') {
-        if (!(await confirmBox('Delete project?', `"${state.project}" and all its files will be permanently deleted.`))) return;
+        if (!(await confirmBox('Delete project?', `"${state.project}" and all its files will be permanently deleted. Its share links stop working.`))) return;
         await api(`/api/projects/${P()}`, { method: 'DELETE' });
         localStorage.removeItem(`pw.chat.${state.project}`);
         state.project = null;
@@ -733,7 +656,7 @@ async function openProjectMenu() {
 /* ───────────────────────── compile ───────────────────────── */
 
 function hasAnyEngine() {
-  if (state.config.hosted) return true;
+  if (!isOwner()) return true; // the owner's server decides
   const e = state.status?.engines || {};
   return ['tectonic', 'latexmk', 'pdflatex', 'xelatex', 'lualatex'].some((k) => e[k]) || state.status?.settings.allowOnline;
 }
@@ -774,7 +697,7 @@ async function compile() {
   setCompiling(true);
   try {
     await saveAll();
-    const r = state.ws ? await compileCloud() : await api(`/api/projects/${P()}/compile`, { method: 'POST', body: {} });
+    const r = await api(`/api/projects/${P()}/compile`, { method: 'POST', body: {} });
     state.lastResult = r;
     state.errors = r.errors || [];
     state.warnings = r.warnings || [];
@@ -882,6 +805,10 @@ function showNoEngine() {
   const empty = $('#pdfEmpty');
   if (state.pdfDoc) return;
   empty.hidden = false;
+  if (!isOwner()) {
+    empty.innerHTML = `<img src="/logo.svg" alt="" width="72" height="72" class="bob" /><h3>No PDF yet</h3><p>The owner hasn’t set up a LaTeX engine on their computer yet.</p>`;
+    return;
+  }
   empty.innerHTML = `
     <img src="/logo.svg" alt="" width="72" height="72" class="bob" />
     <h3>Let's set up a LaTeX engine</h3>
@@ -1099,11 +1026,6 @@ new ResizeObserver(() => {
 
 async function refreshStatus() {
   state.status = await api('/api/status');
-  const mine = userKeys();
-  for (const id of ['anthropic', 'openai', 'gemini']) {
-    const p = state.status.providers[id];
-    if (p && mine[id]) Object.assign(p, { available: true, detail: 'Using your key (saved in this browser)' });
-  }
   renderModelPill();
   renderLog();
 }
@@ -1223,23 +1145,12 @@ function openSettings(focus) {
   const prov = st.providers;
   const eng = st.engines;
   const badge = (ok, yes = 'Ready', no = 'Not set') => `<span class="badge-pill ${ok ? 'ok' : 'warn'}">${ok ? yes : no}</span>`;
-  const hosted = !!state.config.hosted;
-  const mask = (k) => (k.length > 10 ? `${k.slice(0, 4)}…${k.slice(-4)}` : '••••');
   const keyCard = (id, title, link, placeholder) => {
     const k = s.keyStatus[id];
-    const mine = userKeys()[id];
-    const set = k.set || !!mine;
-    const where = mine
-      ? `Using your key ${esc(mask(mine))}, saved in this browser only`
-      : k.set
-        ? k.source === 'env'
-          ? hosted ? 'Using the shared server key' : `Using env var ${esc(k.hint)}`
-          : `Using saved key ${esc(k.hint)}`
-        : `Get a key at <a href="${link}" target="_blank" rel="noopener">${link.replace(/^https:\/\//, '')}</a>`;
-    const remove = mine ? `<button class="btn-ghost" data-clear-mine="${id}">Remove</button>` : !hosted && k.set && k.source === 'saved' ? `<button class="btn-ghost" data-clear="${id}">Remove</button>` : '';
     return `<div class="setting-card">
-      <div class="setting-row"><span class="label"><b>${title}</b><small>${where}</small></span>${badge(set, 'Key set')}</div>
-      <div class="key-row"><input class="input" type="password" data-key="${id}" placeholder="${set ? 'Paste a new key to replace' : placeholder}" autocomplete="off" />${remove}</div></div>`;
+      <div class="setting-row"><span class="label"><b>${title}</b><small>${k.set ? `Using ${k.source === 'env' ? `env var ${esc(k.hint)}` : `saved key ${esc(k.hint)}`}` : `Get a key at <a href="${link}" target="_blank" rel="noopener">${link.replace(/^https:\/\//, '')}</a>`}</small></span>${badge(k.set, 'Key set')}</div>
+      <div class="key-row"><input class="input" type="password" data-key="${id}" placeholder="${k.set ? 'Paste a new key to replace' : placeholder}" autocomplete="off" />
+      ${k.set && k.source === 'saved' ? `<button class="btn-ghost" data-clear="${id}">Remove</button>` : ''}</div></div>`;
   };
   const cliCard = (id, install) => {
     const p = prov[id];
@@ -1253,26 +1164,25 @@ function openSettings(focus) {
     <div class="modal-body">
       <div class="modal-section" id="sec-ai">
         <h3>AI co-author</h3>
-        ${hosted ? '<p class="note">Claude Code, Ollama and other local models work when you run PaperWriter on your own computer with <code>npm start</code>. On this hosted site, use an API key. Keys you paste here stay in this browser and are sent only with your own requests.</p>' : ''}
-        ${hosted ? '' : cliCard('claude-cli', 'Install Claude Code with <code>npm i -g @anthropic-ai/claude-code</code>, then run <code>claude</code> in a terminal once and sign in. No API key needed — it uses your Claude subscription.')}
+        ${cliCard('claude-cli', 'Install Claude Code with <code>npm i -g @anthropic-ai/claude-code</code>, then run <code>claude</code> in a terminal once and sign in. No API key needed — it uses your Claude subscription.')}
         ${keyCard('anthropic', 'Claude API (Anthropic)', 'https://console.anthropic.com/settings/keys', 'sk-ant-…')}
         ${keyCard('openai', 'ChatGPT API (OpenAI)', 'https://platform.openai.com/api-keys', 'sk-…')}
         ${keyCard('gemini', 'Gemini API (Google)', 'https://aistudio.google.com/apikey', 'AIza…')}
-        <div class="setting-card" ${hosted ? 'hidden' : ''}>
+        <div class="setting-card">
           <div class="setting-row"><span class="label"><b>Ollama (local)</b><small>${esc(prov.ollama.detail)}</small></span>${badge(prov.ollama.available, 'Running', 'Offline')}</div>
           <div class="key-row"><input class="input" data-field="ollamaUrl" value="${esc(s.ollamaUrl)}" placeholder="http://127.0.0.1:11434" /></div>
         </div>
-        <div class="setting-card" ${hosted ? 'hidden' : ''}>
+        <div class="setting-card">
           <div class="setting-row"><span class="label"><b>OpenAI-compatible server</b><small>LM Studio, llama.cpp, vLLM, OpenRouter… · ${esc(prov.compat.detail)}</small></span>${badge(prov.compat.available, 'Reachable', 'Offline')}</div>
           <div class="key-row"><input class="input" data-field="compatUrl" value="${esc(s.compatUrl)}" placeholder="http://127.0.0.1:1234/v1" /></div>
           <div class="key-row"><input class="input" type="password" data-key="compat" placeholder="${s.keyStatus.compat.set ? 'Key set — paste to replace' : 'API key (optional)'}" autocomplete="off" /></div>
         </div>
         ${prov['gemini-cli'].available ? cliCard('gemini-cli', '') : ''}
         ${prov['codex-cli'].available ? cliCard('codex-cli', '') : ''}
-        <p class="note" ${hosted ? 'hidden' : ''}>Keys are stored only on this computer in <code>.data/settings.json</code> and never sent to the browser. Environment variables (<code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code>, <code>GEMINI_API_KEY</code>) also work.</p>
+        <p class="note">Keys are stored only on this computer in <code>.data/settings.json</code> and never sent to the browser. Environment variables (<code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code>, <code>GEMINI_API_KEY</code>) also work.</p>
       </div>
 
-      <div class="modal-section" id="sec-compiler" ${hosted ? 'hidden' : ''}>
+      <div class="modal-section" id="sec-compiler">
         <h3>Compiler</h3>
         <div class="setting-card">
           <div class="setting-row"><span class="label"><b>Engine</b><small>Automatic picks Tectonic → latexmk → pdfLaTeX…</small></span>
@@ -1326,16 +1236,6 @@ function openSettings(focus) {
   };
   $('#installTectonicBtn', el)?.addEventListener('click', (e) => installTectonic(e.currentTarget));
   el.addEventListener('click', async (e) => {
-    const mineBtn = e.target.closest('[data-clear-mine]');
-    if (mineBtn) {
-      const k = userKeys();
-      delete k[mineBtn.dataset.clearMine];
-      localStorage.setItem('pw.userKeys', JSON.stringify(k));
-      state.modelCache = {};
-      await refreshStatus();
-      close();
-      return openSettings('ai');
-    }
     const c = e.target.closest('[data-clear]');
     if (!c) return;
     await api('/api/settings', { method: 'POST', body: { keys: { [c.dataset.clear]: '' } } });
@@ -1348,9 +1248,7 @@ function openSettings(focus) {
     for (const inp of $$('[data-key]', el)) if (inp.value.trim()) body.keys[inp.dataset.key] = inp.value.trim();
     for (const inp of $$('[data-field]', el)) body[inp.dataset.field] = inp.type === 'checkbox' ? inp.checked : inp.value;
     try {
-      if (hosted) {
-        localStorage.setItem('pw.userKeys', JSON.stringify({ ...userKeys(), ...body.keys }));
-      } else await api('/api/settings', { method: 'POST', body });
+      await api('/api/settings', { method: 'POST', body });
       state.modelCache = {};
       await refreshStatus();
       close();
@@ -1566,8 +1464,8 @@ async function send(text) {
   try {
     const res = await fetch('/api/chat', {
       method: 'POST',
-      headers: { ...authHeaders(), 'content-type': 'application/json' },
-      body: JSON.stringify({ provider: msg.provider, model: msg.model, messages: history, context }),
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ project: state.project, provider: msg.provider, model: msg.model, messages: history, context }),
       signal: ctrl.signal,
     });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
@@ -1822,16 +1720,6 @@ function wire() {
     }
   });
   window.addEventListener('resize', positionPopover);
-  window.addEventListener('beforeunload', (e) => {
-    if (state.ws?.pending.length) {
-      state.ws.flushOnUnload();
-      return;
-    }
-    if ([...state.docs.values()].some((d) => !d.isClean(d.pwGen))) {
-      saveAll();
-      e.preventDefault();
-    }
-  });
 }
 
 /* ───────────────────────── boot ───────────────────────── */
@@ -1844,35 +1732,31 @@ async function boot() {
   wire();
   setSendMode(false);
   if (isMobile()) setView('editor');
+  const params = new URLSearchParams(location.search);
+  if (params.get('link') === 'invalid') {
+    history.replaceState(null, '', location.pathname);
+    return showPrivate('invalid');
+  }
   try {
-    state.config = await api('/api/config');
+    state.me = await api('/api/me');
+    state.collab = await import('./collab.js');
   } catch (e) {
     $('#authScreen').hidden = true;
     return toast(`Couldn't reach the PaperWriter server: ${e.message}`, 'err', 8000);
   }
-  if (state.config.hosted && !state.config.cloud) return showNeedsSupabase();
-  if (state.config.cloud) {
-    try {
-      state.collab = await import('./cloud.js');
-      state.cloud = new state.collab.Cloud(state.config.supabaseUrl, state.config.supabaseAnonKey);
-      if (!(await state.cloud.init())) return showSignIn();
-    } catch (e) {
-      $('#authScreen').hidden = true;
-      return toast(`Couldn't connect to Supabase: ${e.message}`, 'err', 10000);
-    }
-    document.body.classList.add('cloud');
-    renderAccount();
-  }
+  if (!state.me.owner && !state.me.projects.length) return showPrivate();
   $('#authScreen').hidden = true;
+  document.body.classList.toggle('guest', !state.me.owner);
+  if (!state.me.owner) await askNameOnce();
+  renderAccount();
   try {
     await refreshStatus();
     await ensureModelChoice();
-    if (state.cloud) await openInitialCloudProject();
-    else {
-      const { projects } = await api('/api/projects');
-      const name = projects.some((p) => p.name === prefs.lastProject) ? prefs.lastProject : projects[0]?.name;
-      if (name) await loadProject(name);
-    }
+    const wanted = params.get('project');
+    if (wanted) history.replaceState(null, '', location.pathname);
+    const names = isOwner() ? (await api('/api/projects')).projects.map((p) => p.name) : state.me.projects.map((p) => p.name);
+    const name = [wanted, prefs.lastProject, names[0]].find((n) => n && names.includes(n));
+    if (name) await loadProject(name);
   } catch (e) {
     toast(e.message, 'err', 8000);
   }
@@ -1889,7 +1773,7 @@ let visual = new VisualEditor({
     const names = /\.\w{2,4}$/.test(p) ? [p] : ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp'].map((e) => p + e);
     for (const n of names) {
       const f = state.files.find((x) => x.path === n || x.path.endsWith(`/${n}`));
-      if (f && !/\.(pdf|eps)$/i.test(f.path)) return state.ws ? state.ws.fileUrl(f.path) : `/api/projects/${P()}/file?path=${enc(f.path)}&raw=1`;
+      if (f && !/\.(pdf|eps)$/i.test(f.path)) return state.ws?.fileUrl(f.path) ?? null;
     }
     return null;
   },
@@ -1918,60 +1802,14 @@ function applyEditorMode() {
   }
 }
 
-/* ───────────────────────── cloud: sign-in & account ───────────────────────── */
+/* ───────────────────────── identity & presence ───────────────────────── */
 
-const GOOGLE_ICON =
-  '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="#4285F4" d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5a5.6 5.6 0 0 1-2.4 3.6v3h3.9c2.3-2.1 3.5-5.2 3.5-8.8z"/><path fill="#34A853" d="M12 24c3.2 0 6-1.1 7.9-2.9l-3.9-3c-1.1.7-2.4 1.2-4 1.2-3.1 0-5.7-2.1-6.6-4.9H1.4v3.1A12 12 0 0 0 12 24z"/><path fill="#FBBC05" d="M5.4 14.4a7.2 7.2 0 0 1 0-4.6V6.7h-4a12 12 0 0 0 0 10.8l4-3.1z"/><path fill="#EA4335" d="M12 4.8c1.7 0 3.3.6 4.5 1.8l3.4-3.4A12 12 0 0 0 1.4 6.7l4 3.1C6.3 6.9 8.9 4.8 12 4.8z"/></svg>';
-
-async function showSignIn() {
-  const params = new URLSearchParams(location.search);
-  const invited = params.has('join') || params.has('project');
-  const { google } = await state.cloud.providers();
-  const el = $('#authScreen');
-  el.hidden = false;
-  el.innerHTML = `
-    <div class="auth-card">
-      <img src="/logo.svg" alt="" width="52" height="52" />
-      <h1>${invited ? 'You’re invited to a paper' : 'Welcome to PaperWriter'}</h1>
-      <p>${invited ? 'Sign in with Google to open the shared project.' : 'Write LaTeX together, with an AI co-author.'}</p>
-      <button class="btn-oauth" id="googleBtn" ${google ? '' : 'disabled'}>${GOOGLE_ICON}<span>Continue with Google</span></button>
-      <p class="note" id="authMsg"></p>
-    </div>`;
-  const msg = $('#authMsg', el);
-  if (state.cloud.urlError) {
-    msg.textContent = state.cloud.urlError;
-    history.replaceState(null, '', `${location.pathname}${location.search}`);
-  } else if (!google) {
-    msg.innerHTML = 'Google sign-in isn’t switched on yet. Enable it in Supabase → Authentication → Sign In / Providers → <b>Google</b>.';
-  }
-  $('#googleBtn', el).onclick = async (e) => {
-    e.currentTarget.disabled = true;
-    try {
-      // Comes back to this same address, so ?join= and ?project= links still work after signing in.
-      await state.cloud.signInWithGoogle(`${location.origin}${location.pathname}${location.search}`);
-    } catch (err) {
-      msg.textContent = err.message;
-      e.currentTarget.disabled = false;
-    }
-  };
-}
-
-/** A hosted deployment has no disk, so it can't run without a database. */
-function showNeedsSupabase() {
-  const el = $('#authScreen');
-  el.hidden = false;
-  el.innerHTML = `
-    <div class="auth-card">
-      <img src="/logo.svg" alt="" width="52" height="52" />
-      <h1>Almost there</h1>
-      <p>This deployment needs a Supabase project to store papers and sign people in.</p>
-      <ol class="steps" style="text-align:left;margin:0">
-        <li>Run <code>supabase/schema.sql</code> in your Supabase SQL Editor.</li>
-        <li>In Vercel → Settings → Environment Variables, add <code>SUPABASE_URL</code> and <code>SUPABASE_ANON_KEY</code>.</li>
-        <li>Redeploy.</li>
-      </ol>
-      <p class="note">Step-by-step guide: DEPLOY.md in the repository.</p>
-    </div>`;
+/** Your display name for cursors and avatars (stored only in this browser). */
+function myIdentity() {
+  let id = localStorage.getItem('pw.id');
+  if (!id) localStorage.setItem('pw.id', (id = uid() + uid()));
+  const name = localStorage.getItem('pw.name') || (isOwner() ? 'Owner' : 'Guest');
+  return { name, color: state.collab.colorFor(id) };
 }
 
 const initials = (name) =>
@@ -1983,35 +1821,34 @@ const initials = (name) =>
     .join('');
 
 function avatar(person, cls = '') {
-  return `<span class="avatar ${cls}" style="--c:${person.color}" title="${esc(person.name)}${person.email ? ` · ${esc(person.email)}` : ''}">${esc(initials(person.name || person.email))}</span>`;
+  return `<span class="avatar ${cls}" style="--c:${person.color}" title="${esc(person.name)}${person.role === 'viewer' ? ' (viewing)' : ''}">${esc(initials(person.name))}</span>`;
 }
 
 function renderAccount() {
-  const u = state.cloud.user;
-  const me = { name: state.collab.displayName(u.email), email: u.email, color: state.collab.colorFor(u.id) };
   const btn = $('#accountBtn');
   btn.hidden = false;
-  btn.innerHTML = avatar(me);
+  btn.innerHTML = avatar(myIdentity());
 }
 
 function openAccountMenu() {
-  if (!state.cloud) return;
-  const u = state.cloud.user;
+  const me = myIdentity();
   const pop = openPopover(
     $('#accountBtn'),
-    `<div class="pop-title">Signed in as</div>
-     <div class="pop-item"><span class="grow"><span>${esc(state.collab.displayName(u.email))}</span><span class="sub">${esc(u.email)}</span></span></div>
+    `<div class="pop-title">${isOwner() ? 'You own this PaperWriter' : 'You’re a guest'}</div>
+     <div class="pop-item"><span class="grow"><span>${esc(me.name)}</span><span class="sub">Shown to collaborators</span></span></div>
      <div class="pop-sep"></div>
-     <button class="pop-item" data-signout>${icon('logout')}<span class="grow">Sign out</span></button>`,
+     <button class="pop-item" data-rename>${icon('pencil')}<span class="grow">Change your name</span></button>`,
   );
   const r = $('#accountBtn').getBoundingClientRect();
   pop.style.left = `${Math.max(10, r.right - pop.offsetWidth)}px`;
   pop.onclick = async (e) => {
-    if (!e.target.closest('[data-signout]')) return;
+    if (!e.target.closest('[data-rename]')) return;
     closePopover();
-    await state.ws?.flush().catch(() => {});
-    await state.cloud.signOut();
-    location.href = location.pathname;
+    const name = await askText('Your name', { value: me.name, placeholder: 'How collaborators see you', okLabel: 'Save' });
+    if (!name) return;
+    localStorage.setItem('pw.name', name.slice(0, 40));
+    renderAccount();
+    state.ws?.awareness.setLocalStateField('user', { ...myIdentity(), role: state.role });
   };
 }
 
@@ -2021,316 +1858,212 @@ function renderPresence() {
   $('#presence').innerHTML = shown.map((p) => avatar(p, 'small')).join('') + (others.length > 4 ? `<span class="avatar small more">+${others.length - 4}</span>` : '');
 }
 
-function renderCloudStatus() {
+function renderSyncStatus() {
   const ws = state.ws;
   if (!ws) return;
   if (!ws.canEdit) setSaveStatus('viewonly');
-  else if (ws.saveState === 'error') setSaveStatus('error');
-  else if (ws.saveState === 'saving') setSaveStatus('saving');
   else if (!ws.connected) setSaveStatus('offline');
-  else setSaveStatus('saved');
+  else setSaveStatus(ws.saveState === 'saving' ? 'saving' : 'saved');
 }
 
-/* ───────────────────────── cloud: projects ───────────────────────── */
-
-async function openInitialCloudProject() {
-  const params = new URLSearchParams(location.search);
-  let target = params.get('project');
-  const join = params.get('join');
-  if (join) {
-    try {
-      target = await state.cloud.joinByToken(join);
-      toast('You joined the project', 'ok');
-    } catch (e) {
-      toast(e.message, 'err', 6000);
-    }
-  }
-  if (params.has('join') || params.has('project')) history.replaceState(null, '', location.pathname);
-  state.projects = await state.cloud.listProjects();
-  if (!state.projects.length) {
-    const p = await state.cloud.createProject('My first paper', 'welcome');
-    state.projects = await state.cloud.listProjects();
-    target = p.id;
-  }
-  if (target && !state.projects.some((p) => p.id === target)) toast('You don’t have access to that project. Ask the owner to invite you.', 'err', 6000);
-  const id = state.projects.some((p) => p.id === target) ? target : state.projects.some((p) => p.id === prefs.lastProject) ? prefs.lastProject : state.projects[0].id;
-  await loadProject(id);
+/** Guests only get AI when the owner switched it on for their link. */
+function renderChatAccess() {
+  const locked = !isOwner() && !state.ai;
+  $('#composer').classList.toggle('locked', locked);
+  $('#prompt').disabled = locked;
+  $('#prompt').placeholder = locked ? 'The owner hasn’t enabled AI for your link.' : 'Ask your co-author to write or edit…';
+  $('#modelBtn').disabled = locked;
 }
 
-async function loadCloudProject(id) {
-  let meta = state.projects.find((p) => p.id === id);
-  if (!meta) {
-    state.projects = await state.cloud.listProjects();
-    meta = state.projects.find((p) => p.id === id);
-    if (!meta) throw new Error('Project not found, or you no longer have access.');
-  }
-  if (state.ws) {
-    state.binding?.destroy();
-    state.binding = null;
-    state.ws.destroy();
-  }
-  Object.assign(state, { project: id, role: meta.role, ws: null, file: null, files: [], errors: [], warnings: [], lastResult: null, log: '', people: [] });
-  state.docs.clear();
-  prefs.lastProject = id;
-  savePrefs();
-  $('#projectName').textContent = meta.name;
-  document.title = `${meta.name} · PaperWriter`;
-  $('#roleChip').hidden = meta.role !== 'viewer';
-  renderPresence();
-  loadChat();
-  renderLog();
-  clearPdf();
-  renderFiles();
-  cm.swapDoc(CodeMirror.Doc('', 'stex'));
-  cm.setOption('readOnly', 'nocursor');
-  setSaveStatus('connecting');
+/* ───────────────────────── private / invalid link screens ───────────────────────── */
 
-  const ws = state.cloud.open(meta, meta.role);
-  state.ws = ws;
-  ws.on('status', renderCloudStatus);
-  ws.on('presence', (people) => {
-    state.people = people;
-    renderPresence();
-  });
-  ws.files.observe(() => {
-    if (state.ws !== ws) return;
-    refreshFiles();
-    if (state.file && !ws.files.has(state.file)) {
-      const next = ws.main();
-      if (ws.files.has(next)) openFile(next);
-    }
-  });
-  ws.meta.observe(() => state.ws === ws && refreshFiles());
-  await ws.connect();
-  if (state.ws !== ws) return;
-  renderCloudStatus();
-  await refreshFiles();
-  const last = prefs.lastFiles[id];
-  const target = state.files.some((f) => f.path === last && f.kind === 'text') ? last : state.meta.main;
-  if (state.files.some((f) => f.path === target)) await openFile(target);
-  compile();
+function showPrivate(reason) {
+  const el = $('#authScreen');
+  el.hidden = false;
+  const invalid = reason === 'invalid';
+  el.innerHTML = `
+    <div class="auth-card">
+      <img src="/logo.svg" alt="" width="52" height="52" />
+      <h1>${invalid ? 'This link doesn’t work' : 'This PaperWriter is private'}</h1>
+      <p>${invalid ? 'It may have been revoked, or copied incompletely. Ask the person who shared it for a new link.' : 'Open the share link you were sent to see the project shared with you.'}</p>
+      <p class="note">Running your own copy? Open it at <code>http://localhost:${location.port || 5178}</code> on the computer where it runs.</p>
+    </div>`;
 }
 
-async function compileCloud() {
-  const files = await state.ws.collect({ includeBinary: !state.config.hosted });
-  const r = await api('/api/compile', { method: 'POST', body: { files, main: state.ws.main() } });
-  if (r.pdfBase64) {
-    const bytes = Uint8Array.from(atob(r.pdfBase64), (c) => c.charCodeAt(0));
-    const old = state.pdfBlobUrl;
-    state.pdfBlobUrl = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
-    r.pdf = state.pdfBlobUrl;
-    if (old) setTimeout(() => URL.revokeObjectURL(old), 5000);
-  }
-  return r;
+async function askNameOnce() {
+  if (localStorage.getItem('pw.name')) return;
+  const name = await askText('What’s your name?', { placeholder: 'Shown to the people you write with', okLabel: 'Continue' });
+  localStorage.setItem('pw.name', (name || 'Guest').slice(0, 40));
 }
 
-async function openCloudProjectMenu() {
-  state.projects = await state.cloud.listProjects();
-  const cur = state.projects.find((p) => p.id === state.project);
-  const roleLabel = { owner: 'Owner', editor: 'Can edit', viewer: 'Can view' };
-  const pop = openPopover(
-    $('#projectBtn'),
-    `<div class="pop-title">Your projects</div>
-     ${state.projects
-       .map(
-         (p) => `<button class="pop-item ${p.id === state.project ? 'active' : ''}" data-proj="${p.id}">
-           ${icon(p.role === 'owner' ? 'folder' : 'users')}<span class="grow"><span>${esc(p.name)}</span><span class="sub">${roleLabel[p.role] || p.role} · ${new Date(p.updated_at).toLocaleDateString()}</span></span>
-           ${p.id === state.project ? `<span class="check">${icon('check')}</span>` : ''}</button>`,
-       )
-       .join('')}
-     <div class="pop-sep"></div>
-     <button class="pop-item" data-pact="new">${icon('plus')}<span class="grow">New project…</span></button>
-     ${cur && cur.role !== 'viewer' ? `<button class="pop-item" data-pact="rename">${icon('pencil')}<span class="grow">Rename “${esc(cur.name)}”…</span></button>` : ''}
-     ${cur?.role === 'owner' ? `<button class="pop-item btn-danger" data-pact="delete">${icon('trash')}<span class="grow">Delete “${esc(cur.name)}”…</span></button>` : cur ? `<button class="pop-item btn-danger" data-pact="leave">${icon('logout')}<span class="grow">Leave “${esc(cur.name)}”</span></button>` : ''}`,
-  );
-  pop.onclick = async (e) => {
-    const item = e.target.closest('[data-proj],[data-pact]');
-    if (!item) return;
-    closePopover();
-    try {
-      const act = item.dataset.pact;
-      if (item.dataset.proj && item.dataset.proj !== state.project) await loadProject(item.dataset.proj);
-      else if (act === 'new') {
-        const r = await askText('New project', {
-          placeholder: 'My amazing paper',
-          okLabel: 'Create',
-          extra: `<p class="note">Start from</p><select class="input" name="template"><option value="article">Article</option><option value="blank">Blank</option><option value="welcome">Welcome tour</option></select>`,
-        });
-        if (!r?.value) return;
-        const p = await state.cloud.createProject(r.value, r.template);
-        state.projects = await state.cloud.listProjects();
-        await loadProject(p.id);
-        toast('Project created', 'ok');
-      } else if (act === 'rename') {
-        const name = await askText('Rename project', { value: cur.name, okLabel: 'Rename' });
-        if (!name || name === cur.name) return;
-        await state.cloud.renameProject(cur.id, name);
-        cur.name = name;
-        $('#projectName').textContent = name;
-      } else if (act === 'delete' || act === 'leave') {
-        const del = act === 'delete';
-        if (!(await confirmBox(del ? 'Delete project?' : 'Leave project?', del ? `"${cur.name}" and all its files will be permanently deleted for everyone.` : `You'll lose access to "${cur.name}" until someone invites you again.`, del ? 'Delete' : 'Leave'))) return;
-        state.binding?.destroy();
-        state.ws?.destroy();
-        state.ws = null;
-        if (del) await state.cloud.deleteProject(cur.id);
-        else await state.cloud.removeMember(cur.id, state.cloud.user.email.toLowerCase());
-        localStorage.removeItem(`pw.chat.${cur.id}`);
-        state.project = null;
-        await openInitialCloudProject();
-      }
-    } catch (err) {
-      toast(err.message, 'err');
-    }
-  };
-}
-
-/* ───────────────────────── sharing ───────────────────────── */
-
-function openShareSetupHelp() {
-  openModal(`
-    <div class="modal-head">${icon('users')}<h2>Share this project</h2><button class="icon-btn" data-close>${icon('x')}</button></div>
-    <div class="modal-body">
-      <p>Sharing, email invites and live co-editing need <b>cloud mode</b>, which stores projects in your own free Supabase project.</p>
-      <ol class="steps">
-        <li>Create a project at <a href="https://supabase.com/dashboard" target="_blank" rel="noopener">supabase.com</a>.</li>
-        <li>Open <b>SQL Editor</b>, paste <code>supabase/schema.sql</code> and run it.</li>
-        <li>Copy <code>.env.example</code> to <code>.env</code> and fill in your Supabase URL and keys.</li>
-        <li>Restart PaperWriter (<code>npm start</code>), or deploy it to Vercel with the same variables.</li>
-      </ol>
-      <p class="note">The full walkthrough is in <code>DEPLOY.md</code>.</p>
-    </div>`);
-}
+/* ───────────────────────── sharing (owner) ───────────────────────── */
 
 async function openShare() {
-  if (!state.cloud || !state.ws) return openShareSetupHelp();
+  if (!isOwner()) {
+    const people = state.people.map((p) => `<li>${avatar(p)}<span class="grow"><b>${esc(p.name)}${p.me ? ' (you)' : ''}</b><small>${p.role === 'viewer' ? 'Viewing' : p.role === 'owner' ? 'Owner' : 'Editing'}</small></span></li>`).join('');
+    openModal(`<div class="modal-head">${icon('users')}<h2>People here now</h2><button class="icon-btn" data-close>${icon('x')}</button></div>
+      <div class="modal-body share"><ul class="member-list">${people}</ul><p class="note">Only the owner can create or change share links.</p></div>`);
+    return;
+  }
   const pid = state.project;
-  const isOwner = state.role === 'owner';
-  const canManage = isOwner || state.role === 'editor';
-  const roleText = { owner: 'Owner', editor: 'Editor', viewer: 'Viewer' };
-  let project = await state.cloud.getProject(pid);
-  let members = await state.cloud.members(pid);
+  let [{ shares }, net] = await Promise.all([api(`/api/projects/${P()}/shares`), api('/api/network')]);
 
-  const { el, close } = openModal(`
-    <div class="modal-head">${icon('users')}<h2>Share “${esc(project.name)}”</h2><button class="icon-btn" data-close>${icon('x')}</button></div>
+  const { el } = openModal(`
+    <div class="modal-head">${icon('users')}<h2>Share “${esc(pid)}”</h2><button class="icon-btn" data-close>${icon('x')}</button></div>
     <div class="modal-body share">
-      ${
-        canManage
-          ? `<form class="invite-row" id="inviteForm">
-              <input class="input" type="email" name="email" required placeholder="Add people by email" autocomplete="off" />
-              <select class="input" name="role"><option value="editor">Editor</option><option value="viewer">Viewer</option></select>
-              <button class="btn-primary" type="submit">${icon('mail')}<span>Invite</span></button>
-            </form>`
-          : `<p class="note">You can view who has access. Ask an editor or the owner to invite others.</p>`
-      }
-      <h3 class="share-h">People with access</h3>
-      <ul class="member-list" id="memberList"></ul>
-      <h3 class="share-h">General access</h3>
-      <div class="access-row">
-        <span class="access-icon" id="accessIcon"></span>
-        <div class="grow">
-          <select class="input access-select" id="linkRole" ${canManage ? '' : 'disabled'}>
-            <option value="none">Restricted: only people added above</option>
-            <option value="viewer">Anyone with the link can view</option>
-            <option value="editor">Anyone with the link can edit</option>
-          </select>
-          <small id="accessHint"></small>
-        </div>
-      </div>
-    </div>
-    <div class="modal-foot">
-      ${canManage ? `<button class="btn-ghost" id="resetLink" title="Old links stop working">Reset link</button>` : ''}
-      <span class="spacer"></span>
-      <button class="btn-ghost" id="copyLink">${icon('link')}<span>Copy link</span></button>
-      <button class="btn-primary" data-close>Done</button>
+      <h3 class="share-h">Share links</h3>
+      <ul class="link-list" id="linkList"></ul>
+      <form class="invite-row" id="newLink">
+        <select class="input" name="role"><option value="viewer">Can view</option><option value="editor">Can edit</option></select>
+        <label class="toggle" title="Lets them chat with your AI models (your Claude Code subscription or API keys)"><input type="checkbox" name="ai" /><span class="track"></span><span>Can use my AI</span></label>
+        <button class="btn-primary" type="submit">${icon('link')}<span>Create link</span></button>
+      </form>
+
+      <h3 class="share-h">Who can reach this computer</h3>
+      <div id="reach"></div>
+
+      <h3 class="share-h">People here now</h3>
+      <ul class="member-list" id="hereNow"></ul>
+
+      <p class="note">Everything stays on this computer: files, AI keys and chats. Links only open this one project.
+      People with an <b>edit</b> link change files that compile here; PaperWriter blocks LaTeX from reading anything outside the project, but only give edit links to people you trust. Revoking a link disconnects them immediately.</p>
     </div>`);
 
-  const linkFor = () => (project.link_role === 'none' ? `${location.origin}/?project=${pid}` : `${location.origin}/?join=${project.share_token}`);
-  const renderAccess = () => {
-    $('#linkRole', el).value = project.link_role;
-    $('#accessIcon', el).innerHTML = icon(project.link_role === 'none' ? 'lock' : 'globe');
-    $('#accessHint', el).textContent =
-      project.link_role === 'none' ? 'The link only opens for people you’ve added.' : `Anyone who signs in with the link becomes a${project.link_role === 'editor' ? 'n editor' : ' viewer'}.`;
-  };
-  const renderMembers = () => {
-    const me = state.cloud.user.email.toLowerCase();
-    $('#memberList', el).innerHTML = members
-      .map((m) => {
-        const person = { name: state.collab.displayName(m.email), email: m.email, color: state.collab.colorFor(m.user_id || m.email) };
-        const roleCtl =
-          m.role === 'owner' || !isOwner
-            ? `<span class="role-label">${roleText[m.role]}</span>`
-            : `<select class="input role-select" data-member="${esc(m.email)}">
-                 <option value="editor" ${m.role === 'editor' ? 'selected' : ''}>Editor</option>
-                 <option value="viewer" ${m.role === 'viewer' ? 'selected' : ''}>Viewer</option>
-                 <option value="remove">Remove access</option>
-               </select>`;
-        return `<li>${avatar(person)}<span class="grow"><b>${esc(person.name)}${m.email === me ? ' (you)' : ''}</b><small>${esc(m.email)}${m.user_id ? '' : ' · invited'}</small></span>${roleCtl}</li>`;
-      })
-      .join('');
+  const base = () => net.tunnel.url || net.addresses[0] || location.origin;
+  const renderLinks = () => {
+    $('#linkList', el).innerHTML = shares.length
+      ? shares
+          .map(
+            (s) => `<li data-token="${esc(s.token)}">
+              <span class="access-icon">${icon(s.role === 'editor' ? 'pencil' : 'eye')}</span>
+              <span class="grow"><code class="link-url">${esc(`${base()}/s/${s.token}`)}</code>
+                <small>Created ${new Date(s.created).toLocaleDateString()}${s.ai ? ' · can use your AI' : ''}</small></span>
+              <select class="input role-select" data-act="role"><option value="viewer" ${s.role === 'viewer' ? 'selected' : ''}>Can view</option><option value="editor" ${s.role === 'editor' ? 'selected' : ''}>Can edit</option></select>
+              <label class="toggle" title="Can use my AI"><input type="checkbox" data-act="ai" ${s.ai ? 'checked' : ''} /><span class="track"></span><span>AI</span></label>
+              <button class="btn-ghost small" data-act="copy">${icon('copy')}<span>Copy</span></button>
+              <button class="icon-btn small btn-danger" data-act="revoke" title="Revoke this link">${icon('trash')}</button>
+            </li>`,
+          )
+          .join('')
+      : '<li class="empty">No links yet. Create one below.</li>';
     hydrateIcons(el);
   };
-  renderAccess();
-  renderMembers();
+  const renderReach = () => {
+    const local = !net.lan && !net.tunnel.running;
+    $('#reach', el).innerHTML = `
+      ${local ? `<p class="warn-line">${icon('lock')}Right now only this computer can open PaperWriter, so links won’t work for anyone else yet.</p>` : ''}
+      <div class="setting-card">
+        <div class="setting-row"><span class="label"><b>Devices on my Wi-Fi / network</b><small>${net.lan ? `Others on your network use ${net.addresses.map(esc).join(' or ') || 'this computer’s address'}` : 'Off. Turn on so people on the same network can open your links.'}${net.lanLocked ? ' (set by the HOST variable)' : ''}</small></span>
+          <label class="toggle"><input type="checkbox" id="lanToggle" ${net.lan ? 'checked' : ''} ${net.lanLocked ? 'disabled' : ''} /><span class="track"></span></label></div>
+      </div>
+      <div class="setting-card">
+        <div class="setting-row"><span class="label"><b>Anywhere on the internet</b><small>${
+          net.tunnel.running
+            ? `Public address: <code>${esc(net.tunnel.url)}</code>. It changes each time you start it.`
+            : net.cloudflared
+              ? 'Uses a free, encrypted Cloudflare Tunnel. No account or router setup needed.'
+              : 'Needs cloudflared (free, about 30 MB, from github.com/cloudflare/cloudflared).'
+        }</small></span>
+          ${
+            net.tunnel.running
+              ? `<button class="btn-ghost" id="tunnelStop">Stop</button>`
+              : net.cloudflared
+                ? `<button class="btn-primary" id="tunnelStart">${icon('globe')}<span>Start</span></button>`
+                : `<button class="btn-ghost" id="tunnelInstall">${icon('download')}<span>Install</span></button>`
+          }</div>
+      </div>`;
+    hydrateIcons(el);
+    $('#lanToggle', el)?.addEventListener('change', async (e) => {
+      try {
+        net = await api('/api/network', { method: 'POST', body: { lan: e.target.checked } });
+        if (net.lan) toast('Devices on your network can now open your links. Windows may ask to allow Node.js through the firewall.', 'ok', 6000);
+      } catch (err) {
+        toast(err.message, 'err');
+      }
+      renderReach();
+      renderLinks();
+    });
+    const busy = (btn, label) => {
+      btn.disabled = true;
+      btn.innerHTML = `<span class="spinner"></span><span>${label}</span>`;
+    };
+    $('#tunnelStart', el)?.addEventListener('click', async (e) => {
+      busy(e.currentTarget, 'Starting…');
+      try {
+        net = await api('/api/tunnel/start', { method: 'POST' });
+        toast('Your links now work from anywhere', 'ok');
+      } catch (err) {
+        toast(err.message, 'err');
+      }
+      renderReach();
+      renderLinks();
+    });
+    $('#tunnelStop', el)?.addEventListener('click', async () => {
+      net = await api('/api/tunnel/stop', { method: 'POST' });
+      renderReach();
+      renderLinks();
+    });
+    $('#tunnelInstall', el)?.addEventListener('click', async (e) => {
+      busy(e.currentTarget, 'Downloading…');
+      try {
+        net = await api('/api/tunnel/install', { method: 'POST' });
+        toast('cloudflared installed', 'ok');
+      } catch (err) {
+        toast(`Install failed: ${err.message}`, 'err');
+      }
+      renderReach();
+    });
+  };
+  const renderHere = () => {
+    $('#hereNow', el).innerHTML =
+      state.people.map((p) => `<li>${avatar(p)}<span class="grow"><b>${esc(p.name)}${p.me ? ' (you)' : ''}</b><small>${p.role === 'viewer' ? 'Viewing' : p.role === 'owner' ? 'Owner' : 'Editing'}</small></span></li>`).join('') ||
+      '<li class="empty">Just you.</li>';
+  };
+  renderLinks();
+  renderReach();
+  renderHere();
 
-  $('#inviteForm', el)?.addEventListener('submit', async (e) => {
+  $('#newLink', el).addEventListener('submit', async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
-    const email = String(fd.get('email')).trim().toLowerCase();
-    const role = fd.get('role');
-    const btn = $('button[type="submit"]', e.target);
-    btn.disabled = true;
     try {
-      await state.cloud.addMember(pid, email, role);
-      members = await state.cloud.members(pid);
-      renderMembers();
-      e.target.reset();
-      try {
-        await api('/api/invite', { method: 'POST', body: { projectId: pid, email } });
-        toast(`Invitation emailed to ${email}`, 'ok');
-      } catch (err) {
-        await navigator.clipboard.writeText(`${location.origin}/?project=${pid}`).catch(() => {});
-        toast(`${email} was added, but the email failed (${err.message}). Link copied, so send it to them yourself.`, 'err', 8000);
-      }
-    } catch (err) {
-      toast(err.message, 'err');
-    } finally {
-      btn.disabled = false;
-    }
-  });
-  $('#memberList', el).addEventListener('change', async (e) => {
-    const sel = e.target.closest('[data-member]');
-    if (!sel) return;
-    try {
-      if (sel.value === 'remove') await state.cloud.removeMember(pid, sel.dataset.member);
-      else await state.cloud.updateMember(pid, sel.dataset.member, sel.value);
-      members = await state.cloud.members(pid);
-      renderMembers();
+      const s = await api(`/api/projects/${P()}/shares`, { method: 'POST', body: { role: fd.get('role'), ai: fd.get('ai') === 'on' } });
+      shares.push(s);
+      renderLinks();
+      await navigator.clipboard.writeText(`${base()}/s/${s.token}`).catch(() => {});
+      toast('Link created and copied', 'ok');
     } catch (err) {
       toast(err.message, 'err');
     }
   });
-  $('#linkRole', el).addEventListener('change', async (e) => {
-    try {
-      await state.cloud.setLinkRole(pid, e.target.value);
-      project.link_role = e.target.value;
-      renderAccess();
-    } catch (err) {
-      toast(err.message, 'err');
-      renderAccess();
+  $('#linkList', el).addEventListener('click', async (e) => {
+    const li = e.target.closest('[data-token]');
+    const act = e.target.closest('[data-act]')?.dataset.act;
+    if (!li || !act) return;
+    const token = li.dataset.token;
+    if (act === 'copy') {
+      await navigator.clipboard.writeText(`${base()}/s/${token}`);
+      toast('Link copied', 'ok');
+    } else if (act === 'revoke') {
+      await api(`/api/projects/${P()}/shares/${enc(token)}`, { method: 'DELETE' });
+      shares = shares.filter((s) => s.token !== token);
+      renderLinks();
+      toast('Link revoked. Anyone using it was disconnected.', 'ok');
     }
   });
-  $('#copyLink', el).onclick = async () => {
-    await navigator.clipboard.writeText(linkFor());
-    toast(project.link_role === 'none' ? 'Link copied. Only people with access can open it.' : 'Link copied', 'ok');
-  };
-  $('#resetLink', el)?.addEventListener('click', async () => {
-    if (!(await confirmBox('Reset the share link?', 'Anyone using the old link will no longer be able to join.', 'Reset'))) return openShare();
-    project.share_token = await state.cloud.resetShareToken(pid);
-    toast('New link created', 'ok');
-    openShare();
+  $('#linkList', el).addEventListener('change', async (e) => {
+    const li = e.target.closest('[data-token]');
+    const act = e.target.dataset.act;
+    if (!li || !act) return;
+    const body = act === 'role' ? { role: e.target.value } : { ai: e.target.checked };
+    try {
+      const s = await api(`/api/projects/${P()}/shares/${enc(li.dataset.token)}`, { method: 'PATCH', body });
+      shares = shares.map((x) => (x.token === s.token ? s : x));
+      renderLinks();
+    } catch (err) {
+      toast(err.message, 'err');
+    }
   });
-  void close;
 }
 
 boot();

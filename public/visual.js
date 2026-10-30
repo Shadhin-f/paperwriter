@@ -428,15 +428,18 @@ export class VisualEditor {
   }
 
   focusBlock(i, atStart = false) {
+    const selectAll = this.pendingSelectAll;
     this.pendingFocus = null;
     this.pendingFocusAtStart = false;
+    this.pendingSelectAll = false;
     const el = this.page.querySelector(`.vb[data-i="${i}"] [contenteditable="true"]`);
     if (!el) return;
     el.focus();
     const sel = getSelection();
     const r = document.createRange();
     r.selectNodeContents(el);
-    r.collapse(atStart);
+    // A freshly inserted block has placeholder text: select it so typing replaces it.
+    if (!selectAll) r.collapse(atStart);
     sel.removeAllRanges();
     sel.addRange(r);
   }
@@ -657,6 +660,7 @@ export class VisualEditor {
     const text = i >= 0 ? `\n\n${tpl}` : `\n${tpl}\n${this.blocks.length ? '\n' : ''}`;
     if (at > src.length) return;
     this.pendingFocus = i + 1;
+    this.pendingSelectAll = true;
     this.cm.replaceRange(text, this.cm.posFromIndex(at), this.cm.posFromIndex(at), '+visual');
   }
 

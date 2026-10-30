@@ -1,7 +1,7 @@
 {
   "name": "paperwriter",
   "version": "1.0.0",
-  "description": "A cute, local LaTeX editor & compiler with an AI co-author (Claude, ChatGPT, Gemini, Ollama, Claude Code CLI).",
+  "description": "Open-source LaTeX studio with an AI co-author, live co-editing over share links and a visual editor. Runs on your own computer.",
   "type": "module",
   "main": "server.js",
   "scripts": {
@@ -15,15 +15,30 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@supabase/supabase-js": "^2.118.0",
     "codemirror": "^5.65.21",
     "katex": "^0.19.1",
     "pdfjs-dist": "^6.4.299",
+    "ws": "^8.22.0",
     "y-codemirror": "^3.0.1",
     "y-protocols": "^1.0.7",
+    "y-websocket": "^3.1.0",
     "yjs": "^13.6.33"
   },
   "devDependencies": {
     "esbuild": "^0.28.2"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Shadhin-f/paperwriter.git"
+  },
+  "keywords": [
+    "latex",
+    "editor",
+    "collaboration",
+    "ai",
+    "claude",
+    "tectonic",
+    "yjs",
+    "self-hosted"
+  ]
 }

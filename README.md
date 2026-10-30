@@ -1,91 +1,122 @@
 # PaperWriter
 
-A LaTeX studio with an AI co-author and real-time collaboration. Write in code or on a visual page,
-see the PDF live, chat with Claude, ChatGPT, Gemini or a local model to draft and fix your paper,
-and share it with others the way you would a Google Doc.
+An open-source LaTeX studio that runs on your own computer: write in code or on a visual page, see the PDF live,
+draft and fix your paper with an AI co-author, and invite others to edit with you in real time.
+No accounts and no cloud. Your papers, keys and chats never leave your machine.
 
-## Run it
+## Quick start
+
+You need [Node.js](https://nodejs.org) 22.9 or newer.
 
 ```bash
+git clone https://github.com/Shadhin-f/paperwriter.git
+cd paperwriter
 npm install
 npm start
 ```
 
-Then open http://localhost:5178. It also works as a phone-sized layout.
+Open **http://localhost:5178**. The first time, PaperWriter offers to install [Tectonic](https://tectonic-typesetting.github.io), a small self-contained LaTeX engine, with one click.
+It also uses TeX Live or MiKTeX if you already have them.
 
-Without any setup it runs single-user, with projects saved as files in `projects/`.
-To share projects and edit together, add Supabase keys to a `.env` file (see `.env.example`)
-or deploy it. **[DEPLOY.md](DEPLOY.md)** covers GitHub, Vercel and Supabase step by step.
+## Features
 
-## Sharing & live co-editing
+- **Code + live PDF.** A LaTeX editor with syntax highlighting, error markers that jump to the line, and a crisp PDF preview.
+- **Visual editor.** Switch to **Visual** to type directly on the page. Equations render as you'd see them,
+  and you drag blocks by their **⠿** handle to reorder. Every change is written back to the `.tex` source.
+- **AI co-author.** Chat with Claude, ChatGPT, Gemini or a local model. It edits your paper with reviewable diffs
+  you can apply or revert, and fixes compile errors on request.
+- **Live co-editing.** Share a link and edit together, with everyone's cursors and avatars visible. Undo only undoes your own changes.
+- **Files stay files.** Projects are plain folders in `projects/`, so you can use git, Dropbox or any other editor alongside PaperWriter.
+- Works on phones and tablets, with light and dark themes.
 
-Click **Share** in the top bar:
+## AI models
 
-- **Invite by email** as an *Editor* or *Viewer*. They get an email link straight into the project.
-- **General access**: *Restricted*, *Anyone with the link can view*, or *…can edit*. **Copy link** to send it anywhere. **Reset link** turns old links off.
-- Everyone in the project sees each other's avatars, live cursors and edits as they type. Edits from several people merge
-  automatically (a [Yjs](https://yjs.dev) CRDT synced over Supabase Realtime). Each person's **Undo** only undoes their own changes.
-- Viewers can read, compile and chat, but can't change the document.
-
-## Visual editor
-
-Switch the editor header from **Code** to **Visual** to write on a page instead of in LaTeX:
-
-- Type directly into the title, headings, paragraphs, lists and the abstract. Select text for **bold / italic / underline / inline math / citation**.
-- Equations render with KaTeX. Click one (or any figure, table or other block) to edit its LaTeX with a live preview.
-- Hover a block and drag its **⠿** handle to move it. Use **+** to insert a paragraph, section, list, equation, table or figure.
-- Every change is written back into the `.tex` source as a small edit, so undo, autosave, the AI and collaborators all keep working.
-
-## AI providers
-
-Pick one from the model pill at the top of the chat:
+Pick a model from the pill at the top of the chat. Use whichever you have:
 
 | Provider | What you need |
 | --- | --- |
-| **Claude Code** | The `claude` CLI, logged in (`claude` → sign in). Uses your Claude subscription, no API key needed. |
-| **Claude API** | Anthropic API key (Settings, or `ANTHROPIC_API_KEY`) |
-| **ChatGPT API** | OpenAI API key (Settings, or `OPENAI_API_KEY`) |
-| **Gemini API** | Google AI Studio key (Settings, or `GEMINI_API_KEY`) |
-| **Ollama** | Ollama running locally; your pulled models are listed automatically |
+| **Claude Code** | The [`claude` CLI](https://docs.claude.com/en/docs/claude-code), logged in. Uses your Claude subscription; no API key needed. |
+| **Claude / ChatGPT / Gemini API** | An API key (Settings), or `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` |
+| **Ollama** | [Ollama](https://ollama.com) running locally. Your pulled models appear automatically. |
 | **OpenAI-compatible** | Any `/v1` server: LM Studio, llama.cpp, vLLM, OpenRouter… |
-| Gemini CLI / Codex CLI | Shown when `gemini` / `codex` is on PATH (experimental) |
+| Gemini CLI / Codex CLI | Shown when `gemini` / `codex` is installed (experimental) |
 
-The model list is fetched live from each provider. You can also type any model id.
+Keys you enter in Settings are saved in `.data/settings.json` on your computer and are never sent to a browser.
 
-Keys are kept only on this computer in `.data/settings.json`. They are never sent to the browser.
-On a hosted deployment, keys come from Vercel environment variables. Each user can also paste their own key, which stays in their browser.
+## Sharing a project
 
-## How editing works
+Click **Share** in the top bar.
 
-The AI receives the open file, your selection (if any) and the compile errors. It answers with small *search/replace* edits, which appear as diff cards. With **Auto-apply** on, they're applied right away. Every card has **Revert**, and **Revert all** undoes a whole reply.
+1. **Create a link.** Choose **Can view** or **Can edit**, and decide whether that person **Can use my AI**. AI is off by default; with it on, their chats use *your* models and keys.
+2. **Make your computer reachable.** By default only you can open PaperWriter. Pick one:
+   - **Devices on my Wi-Fi / network**: one switch. Colleagues on the same network open your link.
+     Windows may ask you to allow Node.js through the firewall.
+   - **Anywhere on the internet**: starts a free, encrypted [Cloudflare quick tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/)
+     (no account needed; PaperWriter can download `cloudflared` for you). The address changes every time you start it.
+     Prefer [Tailscale](https://tailscale.com) if you want a private network between your own devices.
+3. **Send the link.** Guests choose a display name and see only that one project. They can't see your other projects, settings, keys or files.
 
-## LaTeX engines
+**Revoke** a link at any time: anyone using it is disconnected immediately. Changing a link from edit to view takes effect at once too.
+PaperWriter has to be running for guests to reach your project.
 
-Detected automatically, in this order: Tectonic → latexmk → pdflatex / xelatex / lualatex. Without any installed engine, the app offers:
+## Privacy & security
 
-- **Install Tectonic**: a one-click download of a small self-contained engine into `.data/bin`. The first compile downloads packages, which takes a few minutes.
-- **Online compiler**: sends your text files to texlive.net. This is opt-in.
+- **Your data stays local.** Projects, the live document, AI keys and chat history are kept on your computer and in your own browser.
+  The only things that leave your machine are the AI requests you choose to make (to the provider you picked), the
+  optional Cloudflare tunnel, and the optional online compiler (texlive.net, off by default).
+- **You are recognised as the owner by being on this computer.** Requests from `localhost` that don't come through a proxy or tunnel get full access.
+  The check also stops other websites from using your browser against PaperWriter (DNS rebinding, cross-site requests).
+  To act as the owner from another device, use the private link printed in the terminal when PaperWriter starts.
+  Delete `.data/owner-secret` to replace it.
+- **Share links** are long random tokens, stored only in the project's `.paperwriter.json`. Opening one saves it in an HttpOnly cookie,
+  and the token is removed from the address bar. Every request and live connection is checked against the link's permissions, and
+  **view-only links can't change the document**: the server discards their edits.
+- **LaTeX is code.** A document can ask the compiler to read any file it can reach. For projects with an **edit** link,
+  PaperWriter checks the sources before every compile. It refuses anything that reads or writes outside the project folder
+  (absolute or `..` paths, `\openin`, `\openout`, `\catcode`, `\scantokens`, Lua, shell escape, file names built from macros…),
+  and runs TeX Live/MiKTeX in "paranoid" file mode. This is a strong filter, not a sandbox, so **only give edit links to people you trust**.
+  View links are always safe in this respect.
+
+Found a security problem? Please see [SECURITY.md](SECURITY.md).
 
 ## Shortcuts
 
 | Keys | Action |
 | --- | --- |
-| `Ctrl+S` | Save and compile |
-| `Ctrl+Enter` | Compile |
+| `Ctrl+S` | Compile |
 | `Ctrl+K` | Ask the AI about the selection |
+| `Ctrl+Z` / `Ctrl+Y` | Undo / redo (your own edits) |
 | `Ctrl+F` | Find |
 | `Ctrl+/` | Toggle comment |
+| `Ctrl+B` / `Ctrl+I` / `Ctrl+U` | Bold / italic / underline in the visual editor |
 | `Ctrl+wheel` on the PDF | Zoom |
 
-Local projects live in `projects/<name>/`; cloud projects live in Supabase. The ★ file in the Files tab is the one that gets compiled.
+## Configuration
 
-## Project layout
+Optional environment variables (see [`.env.example`](.env.example); a `.env` file is loaded automatically):
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `PORT` | `5178` | Port to listen on |
+| `HOST` | `127.0.0.1` | Interface to bind. Setting it overrides the "Devices on my network" switch. |
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY` | — | AI keys (instead of entering them in Settings) |
+
+## How it works
 
 | Path | What |
 | --- | --- |
-| `server.js` | Local Node server (static files, local projects, Tectonic installer) |
-| `api/` | Vercel serverless functions (thin wrappers around `lib/handlers.js`) |
-| `lib/` | AI providers, compiler, auth, shared request handlers |
-| `public/` | The web app (`app.js`, `visual.js` visual editor, `cloud.js` sync engine) |
-| `supabase/schema.sql` | Database tables, security rules, storage and realtime permissions |
-| `scripts/build.mjs` | Copies browser libraries into `public/vendor` and bundles the collaboration code |
+| `server.js` | HTTP + WebSocket server, routes and access checks |
+| `lib/rooms.js` | Live co-editing: one [Yjs](https://yjs.dev) document per open project, synced over WebSocket and saved to disk |
+| `lib/access.js` | Owner detection, share links, cookies |
+| `lib/texguard.js` | Safety check run before compiling projects that have edit links |
+| `lib/compile.js` | Tectonic / latexmk / pdfLaTeX / XeLaTeX / LuaLaTeX, log parsing |
+| `lib/ai.js` | AI providers and streaming |
+| `lib/network.js` | Network addresses and the Cloudflare tunnel |
+| `public/` | The web app (`app.js`, `visual.js` visual editor, `collab.js` sync client) |
+| `scripts/build.mjs` | Copies browser libraries into `public/vendor` and bundles the sync client (runs automatically on `npm start`) |
+
+Development: `npm run dev` restarts the server when you change server code.
+
+## License
+
+[MIT](LICENSE)
