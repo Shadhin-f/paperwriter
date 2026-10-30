@@ -616,6 +616,7 @@ async function openProjectMenu() {
          ? ''
          : `<div class="pop-sep"></div>
      <button class="pop-item" data-pact="new">${icon('plus')}<span class="grow">New project…</span></button>
+     <button class="pop-item" data-pact="import">${icon('upload')}<span class="grow"><span>Import project…</span><span class="sub">Overleaf, Prism, arXiv… (.zip, .tar.gz, .tex)</span></span></button>
      <button class="pop-item btn-danger" data-pact="delete">${icon('trash')}<span class="grow">Delete “${esc(state.project)}”…</span></button>`
      }`,
   );
@@ -635,6 +636,8 @@ async function openProjectMenu() {
         const { name } = await api('/api/projects', { method: 'POST', body: { name: r.value, template: r.template } });
         await loadProject(name);
         toast('Project created', 'ok');
+      } else if (item.dataset.pact === 'import') {
+        await importProjectFlow();
       } else if (item.dataset.pact === 'delete') {
         if (!(await confirmBox('Delete project?', `"${state.project}" and all its files will be permanently deleted. Its share links stop working.`))) return;
         await api(`/api/projects/${P()}`, { method: 'DELETE' });
@@ -651,6 +654,32 @@ async function openProjectMenu() {
       toast(err.message, 'err');
     }
   };
+}
+
+const pickFile = (accept) =>
+  new Promise((resolve) => {
+    const input = Object.assign(document.createElement('input'), { type: 'file', accept });
+    input.onchange = () => resolve(input.files[0] || null);
+    input.click();
+  });
+
+/** Import an export from Overleaf, Prism, Authorea, arXiv, … as a new project. */
+async function importProjectFlow(file) {
+  file ??= await pickFile('.zip,.tar,.tgz,.gz,.tex,application/zip,application/gzip');
+  if (!file) return;
+  const suggested = file.name.replace(/\.(zip|tar\.gz|tgz|tar|gz|tex)$/i, '').replace(/[_-]+/g, ' ').trim() || 'Imported project';
+  const name = await askText('Import project', { value: suggested, placeholder: 'Project name', okLabel: 'Import' });
+  if (!name) return;
+  toast(`Importing ${file.name}…`, '', 2500);
+  const r = await api(`/api/projects/import?name=${enc(name)}&filename=${enc(file.name)}`, {
+    method: 'POST',
+    body: await file.arrayBuffer(),
+    headers: { 'content-type': 'application/octet-stream' },
+  });
+  await loadProject(r.name);
+  const extras = [r.images ? `${r.images} image${r.images > 1 ? 's' : ''}` : '', r.skipped ? `${r.skipped} build file${r.skipped > 1 ? 's' : ''} skipped` : ''].filter(Boolean).join(', ');
+  toast(`Imported ${r.files} files${extras ? ` (${extras})` : ''}. Main file: ${r.main || 'none found'}`, 'ok', 6000);
+  if (!r.main) toast('No file with \\documentclass was found. Pick the main file with ☆ in the Files tab.', 'err', 8000);
 }
 
 /* ───────────────────────── compile ───────────────────────── */
@@ -1674,7 +1703,10 @@ function wire() {
   fv.addEventListener('drop', (e) => {
     e.preventDefault();
     $('#filesView').classList.remove('drop');
-    if (e.dataTransfer.files.length) uploadFiles([...e.dataTransfer.files]);
+    const dropped = [...e.dataTransfer.files];
+    // A dropped export archive becomes a new project; anything else is added to this one.
+    if (dropped.length === 1 && isOwner() && /\.(zip|tgz|tar|tar\.gz)$/i.test(dropped[0].name)) importProjectFlow(dropped[0]).catch((err) => toast(err.message, 'err'));
+    else if (dropped.length) uploadFiles(dropped);
   });
 
   $('#findBtn').onclick = () => cm.execCommand('findPersistent');

@@ -9,6 +9,7 @@ import { providerStatus, listModels, streamChat, buildMessages, SYSTEM_PROMPT } 
 import * as access from './lib/access.js';
 import { attachCollab, room, flushProject, closeRoom, kickGuests } from './lib/rooms.js';
 import * as network from './lib/network.js';
+import { importProject } from './lib/importer.js';
 
 const PORT = Number(process.env.PORT) || 5178;
 
@@ -166,6 +167,13 @@ route('POST', '/api/projects', async (req, { who }) => {
   access.requireOwner(who);
   const { name, template } = await readJson(req);
   return projects.createProject(name, template);
+});
+
+/** Import an export from Overleaf, Prism, arXiv, … (zip / tar.gz / tex) as a new project. */
+route('POST', '/api/projects/import', async (req, { who, url }) => {
+  access.requireOwner(who);
+  const buf = await readBody(req, 300 * 1024 * 1024);
+  return importProject(buf, { filename: url.searchParams.get('filename') || '', name: url.searchParams.get('name') || '' });
 });
 
 route('DELETE', '/api/projects/:p', async (req, { who, params }) => {

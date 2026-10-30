@@ -27,6 +27,9 @@ It also uses TeX Live or MiKTeX if you already have them.
   you can apply or revert, and fixes compile errors on request.
 - **Live co-editing.** Share a link and edit together, with everyone's cursors and avatars visible. Undo only undoes your own changes.
 - **Files stay files.** Projects are plain folders in `projects/`, so you can use git, Dropbox or any other editor alongside PaperWriter.
+- **Import from anywhere.** *Project menu → Import project…* (or drag the file onto the side panel) brings in an export from
+  Overleaf, Prism, Authorea, arXiv and similar platforms: `.zip`, `.tar.gz`/`.tgz`/`.tar`, a gzipped `.tex`, or a single `.tex`.
+  The main file is detected automatically, wrapper folders and build files (`.aux`, `.log`, …) are dropped, and nothing outside the new project folder is ever written.
 - Works on phones and tablets, with light and dark themes.
 
 ## AI models
@@ -112,6 +115,7 @@ Optional environment variables (see [`.env.example`](.env.example); a `.env` fil
 | `lib/compile.js` | Tectonic / latexmk / pdfLaTeX / XeLaTeX / LuaLaTeX, log parsing |
 | `lib/ai.js` | AI providers and streaming |
 | `lib/network.js` | Network addresses and the Cloudflare tunnel |
+| `lib/importer.js` | Importing exports from other LaTeX platforms (zip / tar.gz / tex) |
 | `public/` | The web app (`app.js`, `visual.js` visual editor, `collab.js` sync client) |
 | `scripts/build.mjs` | Copies browser libraries into `public/vendor` and bundles the sync client (runs automatically on `npm start`) |
 
