@@ -1091,3 +1091,52 @@ body.guest .compile-group .btn-primary:first-child { border-radius: 980px; }
   .vv-head { flex-wrap: wrap; }
 }
 .vv-legend .del { text-decoration: none; }
+
+/* ───────────── setup guide: choosing an AI ───────────── */
+.found-line { display: flex; align-items: center; gap: 8px; margin: -12px 0 18px; font-size: 13.5px; color: var(--mint); }
+.found-line i { width: 16px; height: 16px; }
+.ai-opts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 14px; }
+.ai-opt {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 12px 14px; border-radius: 14px; text-align: left;
+  background: var(--panel); border: 1px solid var(--line); transition: border-color 0.15s, box-shadow 0.15s;
+}
+.ai-opt:hover { border-color: var(--line-2); }
+.ai-opt.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.ai-opt b { font-size: 14.5px; font-weight: 600; display: flex; align-items: center; gap: 4px; }
+.ai-opt .tick i { width: 14px; height: 14px; color: var(--mint); }
+.ai-opt .badge-pill { font-weight: 500; }
+.ai-guide { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; animation: rise 0.3s var(--ease) both; }
+.ai-sub { margin: 0; font-size: 15px; font-weight: 600; }
+.ai-steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 8px; font-size: 14px; color: var(--text-2); }
+.ai-steps li::marker { color: var(--accent-ink); font-weight: 600; }
+.cmd-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; padding: 4px 4px 4px 12px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--line); }
+.cmd-row code { flex: 1; min-width: 0; font: 12.5px var(--mono); color: var(--text); overflow-x: auto; white-space: nowrap; }
+.ai-site { align-self: flex-start; text-decoration: none !important; }
+.key-line { display: flex; gap: 8px; }
+.key-line .input { flex: 1; min-width: 0; }
+.key-line .btn-primary { height: 44px; padding: 0 18px; flex: none; }
+.ai-guide > .btn-primary { align-self: flex-start; }
+.ai-small { font-size: 12px; color: var(--text-3); margin-top: -6px; }
+.ai-guide .status-line { margin: 0; }
+.ai-guide .note { margin: 0; }
+.ai-more { margin-top: 16px; }
+.ai-more summary { cursor: pointer; font-size: 14px; font-weight: 500; color: var(--text-2); padding: 6px 0; }
+.ai-more summary:hover { color: var(--text); }
+.ai-more .setting-card { margin-top: 8px; }
+@media (max-width: 560px) {
+  .ai-opts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .key-line { flex-direction: column; }
+  .key-line .btn-primary { align-self: flex-start; }
+}
+.setup { min-width: 0; max-width: 100%; }
+.setup-stage, .ai-guide, .ai-steps li { min-width: 0; }
+/* Narrow phones: keep the top bar inside the screen */
+@media (max-width: 480px) {
+  .topbar { gap: 4px; padding: 0 8px; }
+  .brand, .presence, .compile-group .caret { display: none; }
+  body:not(.guest) .compile-group .btn-primary:first-child { border-radius: 980px; }
+  .project-btn { max-width: 40vw; padding: 0 8px; }
+  .share-btn { padding: 0 9px; }
+  .compile-group .btn-primary:first-child { padding: 0 11px; }
+  .save-status { padding: 0 2px; }
+}

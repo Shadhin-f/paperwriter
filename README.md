@@ -60,7 +60,7 @@ The first run installs everything it needs and opens **http://localhost:5178** i
 | :-: | --- | --- |
 | 🏷️ | **Workspace** | A name collaborators see when they join, and your display name |
 | 🔗 | **Sharing** | Just you, your Wi-Fi, anyone over the internet (a free Cloudflare link), or your own server. Set a host password to sign in from other devices. |
-| ✨ | **AI** | PaperWriter finds Claude Code, Ollama and others by itself; paste an API key if you like. Decide whether collaborators may bring their own AI, and whether new invites may use yours. |
+| ✨ | **AI** | Pick a co-author with step-by-step help: **free** options first (Gemini's free tier, OpenRouter's free models, or Ollama on your computer), then Claude Code with a Claude Pro or Max plan, or the pay-as-you-go Claude and ChatGPT APIs. **Test and save** checks your key before keeping it. Already have Claude Code or Ollama? It's found automatically. Skip this step if you like. |
 | 📄 | **LaTeX** | Installs [Tectonic](https://tectonic-typesetting.github.io), a small self-contained engine, automatically. TeX Live and MiKTeX work too. |
 
 That's it. Open a paper and press **Share** to invite people. Reopen the guide any time from your avatar menu (top right).

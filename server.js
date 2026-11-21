@@ -6,7 +6,7 @@ import { ROOT, sendJson, readJson, readBody, HttpError } from './lib/util.js';
 import { getSettings, publicSettings, updateSettings, setHostPassword, publicUrl } from './lib/settings.js';
 import * as projects from './lib/projects.js';
 import { compileProject, detectEngines, installTectonic } from './lib/compile.js';
-import { providerStatus, listModels, streamChat, buildMessages, SYSTEM_PROMPT } from './lib/ai.js';
+import { providerStatus, listModels, streamChat, buildMessages, SYSTEM_PROMPT, verifyKey } from './lib/ai.js';
 import * as access from './lib/access.js';
 import { attachCollab, room, flushProject, closeRoom, kickGuests } from './lib/rooms.js';
 import * as network from './lib/network.js';
@@ -133,9 +133,10 @@ const guestCanUseAI = (who) => [...who.grants.values()].some((g) => g.ai);
 
 
 
-route('GET', '/api/status', async (req, { who }) => {
+route('GET', '/api/status', async (req, { who, url }) => {
   if (who.owner) {
-    const [engines, providers] = await Promise.all([detectEngines(), providerStatus()]);
+    // ?fresh=1 checks again right away (after installing or signing in to an AI).
+    const [engines, providers] = await Promise.all([detectEngines(), providerStatus(url.searchParams.has('fresh'))]);
     return { settings: publicSettings(), engines, providers, platform: process.platform };
   }
   // Guests see which models they may use, never keys, paths or settings.
@@ -153,6 +154,24 @@ route('POST', '/api/settings', async (req, { who }) => {
   if (typeof body.hostPassword === 'string') setHostPassword(body.hostPassword);
   const settings = updateSettings(body);
   return { settings, providers: await providerStatus(true) };
+});
+
+/** Setup guide: check an API key with its provider, and save it only if it works. */
+route('POST', '/api/ai/connect', async (req, { who }) => {
+  access.requireOwner(who);
+  const { provider, key } = await readJson(req);
+  if (!['anthropic', 'openai', 'gemini', 'openrouter'].includes(provider)) throw new HttpError(400, 'Unknown provider');
+  const clean = typeof key === 'string' ? key.trim() : '';
+  if (!clean) throw new HttpError(400, 'Paste your key first.');
+  let found;
+  try {
+    found = await verifyKey(provider, clean);
+  } catch (e) {
+    throw new HttpError(400, e.message);
+  }
+  updateSettings({ keys: { [provider]: clean } });
+  await providerStatus(true);
+  return { ok: true, ...found };
 });
 
 route('POST', '/api/tectonic/install', async (req, { who }) => {

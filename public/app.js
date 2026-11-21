@@ -127,8 +127,8 @@ const state = {
 const isOwner = () => !!state.me?.owner;
 const canEdit = () => !!state.ws?.canEdit;
 
-const PROVIDER_ORDER = ['claude-cli', 'anthropic', 'openai', 'gemini', 'ollama', 'compat', 'gemini-cli', 'codex-cli'];
-const PREFERRED_MODEL = { 'claude-cli': 'sonnet', anthropic: 'claude-sonnet-5-5', openai: 'gpt-5', gemini: 'gemini-2.5-pro', 'gemini-cli': 'default', 'codex-cli': 'default' };
+const PROVIDER_ORDER = ['claude-cli', 'anthropic', 'openai', 'gemini', 'openrouter', 'ollama', 'compat', 'gemini-cli', 'codex-cli'];
+const PREFERRED_MODEL = { 'claude-cli': 'sonnet', anthropic: 'claude-sonnet-5-5', openai: 'gpt-5', gemini: 'gemini-2.5-flash', 'gemini-cli': 'default', 'codex-cli': 'default' };
 const P = () => enc(state.project);
 
 /*
@@ -1710,7 +1710,8 @@ function openSettings(focus) {
         ${cliCard('claude-cli', 'Install Claude Code with <code>npm i -g @anthropic-ai/claude-code</code>, then run <code>claude</code> in a terminal once and sign in. No API key needed — it uses your Claude subscription.')}
         ${keyCard('anthropic', 'Claude API (Anthropic)', 'https://console.anthropic.com/settings/keys', 'sk-ant-…')}
         ${keyCard('openai', 'ChatGPT API (OpenAI)', 'https://platform.openai.com/api-keys', 'sk-…')}
-        ${keyCard('gemini', 'Gemini API (Google)', 'https://aistudio.google.com/apikey', 'AIza…')}
+        ${keyCard('gemini', 'Gemini API (Google) · free tier', 'https://aistudio.google.com/apikey', 'AIza…')}
+        ${keyCard('openrouter', 'OpenRouter · includes free models', 'https://openrouter.ai/keys', 'sk-or-…')}
         <div class="setting-card">
           <div class="setting-row"><span class="label"><b>Ollama (local)</b><small>${esc(prov.ollama.detail)}</small></span>${badge(prov.ollama.available, 'Running', 'Offline')}</div>
           <div class="key-row"><input class="input" data-field="ollamaUrl" value="${esc(s.ollamaUrl)}" placeholder="http://127.0.0.1:11434" /></div>
@@ -2726,12 +2727,61 @@ async function runSetup() {
     reach: s.publicUrl ? 'server' : net.tunnel.running ? 'internet' : net.lan ? 'network' : reaches[0][0],
     publicUrl: s.publicUrl || '',
     password: '',
-    aiProvider: 'anthropic',
+    ai: 'gemini',
+    aiKey: '',
     guestKeys: s.guestKeys !== false,
     defaultLinkAI: !!s.defaultLinkAI,
     allowOnline: !!s.allowOnline,
   };
   const steps = ['Workspace', 'Sharing', 'AI', 'LaTeX'];
+  // Ways to get an AI co-author, free ones first. "key" options are checked with the provider before saving.
+  const AI_OPTIONS = [
+    {
+      id: 'gemini', title: 'Gemini', badge: 'Free', free: true, kind: 'key', placeholder: 'AIza…',
+      sub: 'Free with a Google account. No card needed.',
+      site: 'https://aistudio.google.com/apikey', siteLabel: 'Open Google AI Studio',
+      steps: ['Open Google AI Studio and sign in with your Google account.', 'Click <b>Create API key</b> and copy it.', 'Paste it below and press <b>Test and save</b>.'],
+      note: 'The free tier has daily limits. Google may use free-tier prompts to improve its products.',
+    },
+    {
+      id: 'openrouter', title: 'OpenRouter', badge: 'Free models', free: true, kind: 'key', placeholder: 'sk-or-…',
+      sub: 'One key for hundreds of models, including free ones.',
+      site: 'https://openrouter.ai/keys', siteLabel: 'Open OpenRouter',
+      steps: ['Open OpenRouter and sign in (Google or GitHub works).', 'Click <b>Create API key</b> and copy it.', 'Paste it below and press <b>Test and save</b>. PaperWriter picks a free model for you.'],
+      note: 'Free models have a daily request limit, and the list changes from time to time.',
+    },
+    {
+      id: 'ollama', title: 'Ollama', badge: 'Free · private', free: true, kind: 'local',
+      sub: 'Runs models on this computer. Nothing leaves it.',
+      site: 'https://ollama.com/download', siteLabel: 'Download Ollama',
+      steps: ['Download Ollama, install it and open it.', 'Download a model in a terminal (about 5 GB):', 'Press <b>Check again</b>.'],
+      cmds: { 1: 'ollama pull qwen2.5' },
+      note: 'Works best on a computer with 16 GB of memory or more.',
+    },
+    {
+      id: 'claude-cli', title: 'Claude Code', badge: 'Claude Pro or Max', kind: 'local',
+      sub: 'Use your Claude subscription. No API key needed.',
+      site: 'https://docs.claude.com/en/docs/claude-code', siteLabel: 'About Claude Code',
+      steps: ['Install it in a terminal:', 'Sign in, and finish in your browser:', 'Press <b>Check again</b>.'],
+      cmds: { 0: 'npm install -g @anthropic-ai/claude-code', 1: 'claude auth login' },
+      note: 'Claude Code comes with the paid Pro and Max plans. Your chats count toward your plan’s usage.',
+    },
+    {
+      id: 'anthropic', title: 'Claude API', badge: 'Pay as you go', kind: 'key', placeholder: 'sk-ant-…',
+      sub: 'Prepaid credits on your Anthropic account.',
+      site: 'https://console.anthropic.com/settings/keys', siteLabel: 'Open the Anthropic Console',
+      steps: ['Open the Anthropic Console and sign in.', 'Add credits under <b>Billing</b>.', 'Under <b>API keys</b>, click <b>Create key</b> and copy it.', 'Paste it below and press <b>Test and save</b>.'],
+    },
+    {
+      id: 'openai', title: 'ChatGPT API', badge: 'Pay as you go', kind: 'key', placeholder: 'sk-…',
+      sub: 'Prepaid credits on your OpenAI account.',
+      site: 'https://platform.openai.com/api-keys', siteLabel: 'Open the OpenAI platform',
+      steps: ['Open the OpenAI platform and sign in.', 'Add credits under <b>Billing</b>.', 'Click <b>Create new secret key</b> and copy it.', 'Paste it below and press <b>Test and save</b>.'],
+    },
+  ];
+  const aiState = {}; // option id → { busy, ok, err }
+  draft.ai = AI_OPTIONS.find((x) => st.providers?.[x.id]?.available)?.id || 'gemini';
+  const aiReady = () => Object.values(st.providers || {}).some((p) => p.available);
   let i = 0;
   let installing = null;
   const save = (body) => api('/api/settings', { method: 'POST', body });
@@ -2769,26 +2819,50 @@ async function runSetup() {
       }`,
     () => {
       const found = Object.values(st.providers || {}).filter((p) => p.available);
-      const keyFor = (id) => s.keyStatus[id]?.set;
+      const o = AI_OPTIONS.find((x) => x.id === draft.ai) || AI_OPTIONS[0];
+      const ready = st.providers?.[o.id]?.available;
+      const as = aiState[o.id] || {};
+      const keySet = s.keyStatus[o.id]?.set;
+      const cmdRow = (c) => `<div class="cmd-row"><code>${esc(c)}</code><button type="button" class="btn-ghost small" data-copycmd="${esc(c)}">Copy</button></div>`;
+      const stepList = o.steps.map((t, k) => `<li><span>${t}</span>${o.cmds?.[k] ? cmdRow(o.cmds[k]) : ''}</li>`).join('');
+      const status = as.busy
+        ? `<div class="status-line"><span class="spinner"></span><span>${o.kind === 'key' ? 'Checking your key…' : 'Looking for it…'}</span></div>`
+        : as.err
+          ? `<div class="status-line err">${icon('alert')}<span>${esc(as.err)}</span></div>`
+          : ready || as.ok
+            ? `<div class="status-line ok">${icon('check')}<span>${esc(as.ok || `${o.title} is connected.`)} You’re ready to write.</span></div>`
+            : '';
       return `
       <h1 class="display-sm">Choose your co-author.</h1>
-      <p class="lede">PaperWriter works with the AI you already have. Add one now, or skip and decide later.</p>
-      ${
-        found.length
-          ? `<ul class="found">${found.map((p) => `<li>${icon('check')}<span class="grow"><b>${esc(p.label)}</b><small>${esc(p.detail)}</small></span></li>`).join('')}</ul>`
-          : '<p class="note">No AI found on this computer yet. Paste a key below to use one.</p>'
-      }
-      <div class="field"><span>Add an API key</span>
-        <div class="seg pills" role="tablist">${[['anthropic', 'Claude'], ['openai', 'ChatGPT'], ['gemini', 'Gemini'], ['openrouter', 'OpenRouter']]
-          .map(([id, label]) => `<button type="button" class="seg-btn ${draft.aiProvider === id ? 'active' : ''}" data-ai="${id}">${label}${keyFor(id) ? ' ✓' : ''}</button>`)
-          .join('')}</div>
-        <input class="input lg mono" type="password" name="aiKey" autocomplete="off" placeholder="${keyFor(draft.aiProvider) ? 'Key saved. Paste a new one to replace it' : 'Paste your key'}" />
-        <small>Saved only on this server, never sent to anyone’s browser.</small>
+      <p class="lede">Pick one to start, free or paid. You can add more, or switch, any time from the chat.</p>
+      ${found.length ? `<p class="found-line">${icon('check')}<span>Already connected: ${found.map((p) => esc(p.label)).join(', ')}</span></p>` : ''}
+      <div class="ai-opts" role="radiogroup" aria-label="AI to set up">
+        ${AI_OPTIONS.map(
+          (x) => `<button type="button" role="radio" aria-checked="${x.id === o.id}" class="ai-opt ${x.id === o.id ? 'on' : ''}" data-aiopt="${x.id}">
+            <b>${x.title}${st.providers?.[x.id]?.available ? ` <span class="tick">${icon('check')}</span>` : ''}</b><span class="badge-pill ${x.free ? 'ok' : ''}">${x.badge}</span></button>`,
+        ).join('')}
       </div>
-      <div class="setting-card">
-        <div class="setting-row"><span class="label"><b>Collaborators can use their own AI</b><small>Their keys, Claude Code or local models stay on their own computer and pay for their own chats.</small></span><label class="toggle"><input type="checkbox" name="guestKeys" ${draft.guestKeys ? 'checked' : ''} /><span class="track"></span></label></div>
-        <div class="setting-row"><span class="label"><b>New invites can use my AI</b><small>Their chats then use your keys or subscription, and its cost. You can change it per invite.</small></span><label class="toggle"><input type="checkbox" name="defaultLinkAI" ${draft.defaultLinkAI ? 'checked' : ''} /><span class="track"></span></label></div>
-      </div>`;
+      <div class="ai-guide">
+        <p class="ai-sub">${o.sub}</p>
+        <ol class="ai-steps">${stepList}</ol>
+        <a class="btn-ghost pill ai-site" href="${o.site}" target="_blank" rel="noopener">${o.siteLabel} ↗</a>
+        ${
+          o.kind === 'key'
+            ? `<div class="key-line"><input class="input lg mono" type="password" name="aiKey" autocomplete="off" spellcheck="false" placeholder="${keySet ? 'Key saved. Paste a new one to replace it' : `Paste your key (${o.placeholder})`}" value="${esc(draft.aiKey)}" />
+               <button type="button" class="btn-primary pill" data-connect-key ${as.busy ? 'disabled' : ''}>Test and save</button></div>
+               <small class="ai-small">Saved only on this computer, never sent to anyone’s browser.</small>`
+            : `<button type="button" class="btn-primary pill" data-check ${as.busy ? 'disabled' : ''}>Check again</button>`
+        }
+        ${status}
+        ${o.note ? `<p class="note">${o.note}</p>` : ''}
+      </div>
+      <details class="ai-more">
+        <summary>AI for the people you invite</summary>
+        <div class="setting-card">
+          <div class="setting-row"><span class="label"><b>Collaborators can use their own AI</b><small>Their keys, Claude Code or local models stay on their own computer and pay for their own chats.</small></span><label class="toggle"><input type="checkbox" name="guestKeys" ${draft.guestKeys ? 'checked' : ''} /><span class="track"></span></label></div>
+          <div class="setting-row"><span class="label"><b>New invites can use my AI</b><small>Their chats then use your keys or subscription, and its cost. You can change it per invite.</small></span><label class="toggle"><input type="checkbox" name="defaultLinkAI" ${draft.defaultLinkAI ? 'checked' : ''} /><span class="track"></span></label></div>
+        </div>
+      </details>`;
     },
     () => {
       const have = engines();
@@ -2843,9 +2917,12 @@ async function runSetup() {
         net = await api('/api/tunnel/start', { method: 'POST' });
       }
     } else if (i === 2) {
-      const body = { guestKeys: draft.guestKeys, defaultLinkAI: draft.defaultLinkAI };
-      if (draft.aiKey) body.keys = { [draft.aiProvider]: draft.aiKey };
-      const r = await save(body);
+      const o = AI_OPTIONS.find((x) => x.id === draft.ai);
+      if (o?.kind === 'key' && draft.aiKey && !aiState[o.id]?.ok) {
+        const ok = await connectKey(o);
+        if (!ok) throw new Error('That key didn’t work. Fix it, or clear the box to skip.');
+      }
+      const r = await save({ guestKeys: draft.guestKeys, defaultLinkAI: draft.defaultLinkAI });
       Object.assign(s, r.settings);
     } else if (i === 3) {
       await save({ allowOnline: draft.allowOnline });
@@ -2853,6 +2930,43 @@ async function runSetup() {
   };
 
   let render = () => {};
+  /** Use a newly connected AI in the chat straight away. */
+  const useForChat = async (provider, model) => {
+    prefs.provider = provider;
+    prefs.model = model || PREFERRED_MODEL[provider] || null;
+    if (!prefs.model) prefs.model = (await api(`/api/models?provider=${enc(provider)}`).catch(() => ({ models: [] }))).models[0]?.id || null;
+    state.modelCache = {};
+    savePrefs();
+  };
+  const connectKey = async (o) => {
+    aiState[o.id] = { busy: true };
+    render();
+    try {
+      const r = await api('/api/ai/connect', { method: 'POST', body: { provider: o.id, key: draft.aiKey } });
+      st = await api('/api/status?fresh=1');
+      Object.assign(s, st.settings);
+      await useForChat(o.id, r.model);
+      draft.aiKey = '';
+      aiState[o.id] = { ok: `Your key works${r.model ? `. Chats will use ${r.model}` : ''}.` };
+      return true;
+    } catch (e) {
+      aiState[o.id] = { err: e.message };
+      return false;
+    } finally {
+      if (i === 2) render();
+    }
+  };
+  const checkLocal = async (o) => {
+    aiState[o.id] = { busy: true };
+    render();
+    st = await api('/api/status?fresh=1').catch(() => st);
+    const p = st.providers?.[o.id];
+    if (p?.available) {
+      await useForChat(o.id);
+      aiState[o.id] = { ok: `${p.detail}.` };
+    } else aiState[o.id] = { err: p?.detail || `${o.title} wasn’t found yet.` };
+    if (i === 2) render();
+  };
   let shownStep = -1; // the entrance animation plays only when the step changes
   const installTectonicNow = async () => {
     installing = true;
@@ -2890,13 +3004,13 @@ async function runSetup() {
           <footer class="setup-foot">
             ${i > 0 && !last ? '<button class="btn-ghost pill" type="button" data-back>Back</button>' : ''}
             <span class="spacer"></span>
-            <button class="btn-primary pill lg" type="button" data-next>${last ? 'Start writing' : 'Continue'}${icon('arrow')}</button>
+            <button class="btn-primary pill lg" type="button" data-next>${last ? 'Start writing' : i === 2 && !aiReady() ? 'Skip for now' : 'Continue'}${icon('arrow')}</button>
           </footer>
         </div>`;
       hydrateIcons(el);
       const stepChanged = shownStep !== i;
       shownStep = i;
-      if (stepChanged) $('.setup-stage input:not([type=radio]):not([type=checkbox]):not([disabled])', el)?.focus();
+      if (stepChanged && i !== 2) $('.setup-stage input:not([type=radio]):not([type=checkbox]):not([disabled])', el)?.focus();
       else $(`.setup-stage [name="${document.activeElement?.name || ''}"]:checked`, el)?.focus();
     };
     el.onchange = (e) => {
@@ -2910,12 +3024,25 @@ async function runSetup() {
       $('[data-next]', el)?.click();
     };
     el.onclick = async (e) => {
-      const ai = e.target.closest('[data-ai]');
-      if (ai) {
+      const opt = e.target.closest('[data-aiopt]');
+      if (opt) {
         collect();
-        draft.aiProvider = ai.dataset.ai;
+        if (draft.ai !== opt.dataset.aiopt) draft.aiKey = '';
+        draft.ai = opt.dataset.aiopt;
         return render();
       }
+      const copy = e.target.closest('[data-copycmd]');
+      if (copy) {
+        await navigator.clipboard.writeText(copy.dataset.copycmd).catch(() => {});
+        return toast('Copied. Paste it in a terminal.', 'ok');
+      }
+      const o = AI_OPTIONS.find((x) => x.id === draft.ai);
+      if (e.target.closest('[data-connect-key]')) {
+        collect();
+        if (!draft.aiKey) return toast('Paste your key first.', 'err');
+        return connectKey(o);
+      }
+      if (e.target.closest('[data-check]')) return checkLocal(o);
       if (e.target.closest('[data-install]')) return installTectonicNow();
       if (e.target.closest('[data-skip]')) return finish();
       if (e.target.closest('[data-back]')) {
