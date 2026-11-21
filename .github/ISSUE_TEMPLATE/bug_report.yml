@@ -1,0 +1,42 @@
+name: Bug report
+description: Something doesn't work as it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for reporting! Security problems go through private reporting instead (see SECURITY.md).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open a project
+        2. Click …
+        3. See …
+    validations:
+      required: true
+  - type: dropdown
+    id: role
+    attributes:
+      label: Were you the host or a guest?
+      options: [Host, Guest with an edit invite, Guest with a view invite, Not sure]
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      placeholder: Windows 11, Chrome 140, Node.js 22.11, running with Docker / start script / npm start
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Errors or logs
+      description: Anything from the terminal or the browser console. Remove keys, passwords and invite links first.
+      render: text

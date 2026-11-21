@@ -1,76 +1,179 @@
+<div align="center">
+
+<img src="public/logo.svg" alt="PaperWriter logo" width="96" height="96" />
+
 # PaperWriter
 
-An open-source LaTeX studio you host yourself: write in code or on a visual page, see the PDF live,
-draft and fix your paper with an AI co-author, and invite people to edit with you in real time with a link or a short code.
-Run it on your laptop or on a server. No accounts and no third-party cloud: your papers, keys and chats stay with you.
+**Write papers together.** An open-source LaTeX studio you host yourself, with a live PDF,<br />
+a visual editor, an AI co-author and real-time co-editing over a link or a short code.
 
-## Quick start
+[![License: MIT](https://img.shields.io/badge/license-MIT-0071e3)](LICENSE)
+[![Node.js 22.9+](https://img.shields.io/badge/node-%E2%89%A522.9-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org)
+[![Docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)](#-host-it-on-a-server)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-34c759)](CONTRIBUTING.md)
 
-You need [Node.js](https://nodejs.org) 22.9 or newer.
+[Setup](#-setup-guide) · [Features](#-features) · [Tech stack](#-tech-stack) · [Sharing](#-sharing-a-project) · [Contributing](#-contributing)
+
+</div>
+
+---
+
+No accounts and no third-party cloud. Run it on your laptop for yourself, on your network for your lab, or on a server for
+collaborators anywhere. Your papers, keys and chats stay with you.
+
+## 🚀 Setup guide
+
+Pick the path that fits you. Each takes a few minutes.
+
+| | Path | Best for |
+| :-: | --- | --- |
+| 💻 | [On your computer](#-on-your-computer) | Writing alone, or sharing with your lab or the world from your own machine |
+| 🌐 | [On a server](#-host-it-on-a-server) | A workspace that's always online, at your own domain with HTTPS |
+| 🙋 | [Join someone's workspace](#-join-someones-workspace) | You were sent an invite link or code |
+
+### 💻 On your computer
+
+**1. Install Node.js 22.9 or newer.** Download it from [nodejs.org](https://nodejs.org) (the LTS version), or use a package manager:
+
+```bash
+winget install OpenJS.NodeJS.LTS     # Windows
+brew install node                    # macOS
+```
+
+**2. Get PaperWriter.** Clone it, or [download the ZIP](https://github.com/Shadhin-f/paperwriter/archive/refs/heads/main.zip) and unzip it.
 
 ```bash
 git clone https://github.com/Shadhin-f/paperwriter.git
-cd paperwriter
 ```
 
-Then double-click **`start.cmd`** (Windows) or run **`./start.sh`** (macOS, Linux). The first run installs everything and opens
-your browser at **http://localhost:5178**, where a short setup guide walks you through:
+**3. Start it.**
 
-1. **Workspace**: a name collaborators see when they join.
-2. **Sharing**: just you, your network, anyone over the internet (a free Cloudflare link), or your own server and domain.
-   Set a host password to sign in from any device.
-3. **AI**: PaperWriter finds Claude Code, Ollama and others on its own; paste an API key if you like. Choose whether
-   collaborators may use their own keys, and whether new invites may use yours.
-4. **LaTeX**: installs [Tectonic](https://tectonic-typesetting.github.io), a small self-contained engine, automatically. TeX Live and MiKTeX work too.
+- **Windows:** double-click `start.cmd` in the `paperwriter` folder.
+- **macOS / Linux:** run `./start.sh` in the `paperwriter` folder.
 
-Prefer the terminal? `npm install && npm start` does the same. Reopen the guide any time from your avatar menu.
+The first run installs everything it needs and opens **http://localhost:5178** in your browser.
 
-## Host it on a server
+**4. Follow the setup guide in your browser.** Four short steps, each with sensible defaults you can skip:
 
-Run PaperWriter on any small VPS so collaborators can join from anywhere, with HTTPS handled for you:
+| | Step | What you choose |
+| :-: | --- | --- |
+| 🏷️ | **Workspace** | A name collaborators see when they join, and your display name |
+| 🔗 | **Sharing** | Just you, your Wi-Fi, anyone over the internet (a free Cloudflare link), or your own server. Set a host password to sign in from other devices. |
+| ✨ | **AI** | PaperWriter finds Claude Code, Ollama and others by itself; paste an API key if you like. Decide whether collaborators may bring their own AI, and whether new invites may use yours. |
+| 📄 | **LaTeX** | Installs [Tectonic](https://tectonic-typesetting.github.io), a small self-contained engine, automatically. TeX Live and MiKTeX work too. |
+
+That's it. Open a paper and press **Share** to invite people. Reopen the guide any time from your avatar menu (top right).
+
+> [!TIP]
+> Prefer the terminal? `npm install && npm start` does the same as the start scripts. `npm run dev` restarts the server when you change server code.
+
+### 🌐 Host it on a server
+
+Any small VPS works (1 vCPU and 1 GB of RAM is plenty for a small group). You need [Docker](https://docs.docker.com/engine/install/)
+and a domain whose A record points at the server.
 
 ```bash
 git clone https://github.com/Shadhin-f/paperwriter.git && cd paperwriter
-echo "DOMAIN=papers.example.org" > .env      # a domain whose A record points at this server
+echo "DOMAIN=papers.example.org" > .env
 docker compose up -d
-docker compose logs paperwriter              # open the "Finish setup" link it prints
+docker compose logs paperwriter        # open the "Finish setup" link it prints
 ```
 
-[Caddy](https://caddyserver.com) fetches a certificate for `DOMAIN`. The setup link signs you in as the host; choose a host password in the
-guide so you can sign in later from any browser. Papers live in `./projects` and settings in `./data`, so updating is just
-`git pull && docker compose up -d --build`.
+[Caddy](https://caddyserver.com) gets an HTTPS certificate for your domain automatically. The setup link signs you in as the host;
+set a host password in the guide so you can sign in from any browser later. Papers live in `./projects` and settings in `./data`.
 
-No domain? Add `PW_BIND=0.0.0.0` to `.env` and run `docker compose up -d paperwriter`, then open `http://<server-ip>:5178`
-(plain http: use it only on networks you trust).
+**Update** to the latest version with `git pull && docker compose up -d --build`. Your papers and settings are kept.
 
-## Features
+> [!NOTE]
+> No domain? Add `PW_BIND=0.0.0.0` to `.env`, run `docker compose up -d paperwriter` and open `http://<server-ip>:5178`.
+> That's plain http, so use it only on networks you trust.
 
-- **Code + live PDF.** A LaTeX editor with syntax highlighting, error markers that jump to the line, and a crisp PDF preview.
-  Click any text in the PDF to jump to that word in the source.
-- **Visual editor.** Switch to **Visual** to type directly on the page. Equations render as you'd see them,
-  and you drag blocks by their **⠿** handle to reorder. Every change is written back to the `.tex` source.
-- **AI co-author.** Chat with Claude, ChatGPT, Gemini or a local model. It edits your paper with reviewable diffs
-  you can apply or revert, and fixes compile errors on request.
-- **Live co-editing.** Invite people with a link or a short code like `K7QF-3MXA`, and edit together with everyone's cursors and avatars visible.
-  Undo only undoes your own changes.
-- **Shared AI chat.** Everyone in a project sees everyone's AI conversations as they happen, with who asked. Each person's AI only
-  uses their own messages as context, and **+** starts a fresh conversation without hiding anyone's history.
-- **Version history.** The history button above the editor lists versions saved automatically as people write (a minute after
-  they pause), with who changed which files. See what changed, compare any version with now, name important moments,
-  and restore a whole version or a single file. Restoring saves the current state first, so it can be undone.
-- **Bring your own AI.** Collaborators can chat with the host's AI, or with their own: an API key, or Claude Code, Ollama and
-  their saved keys from their own computer. Their keys never reach the host.
-- **Files stay files.** Projects are plain folders in `projects/`, so you can use git, Dropbox or any other editor alongside PaperWriter.
-- **Folder tree.** Collapsible folders, a filter box, drag-and-drop to move files and folders, and rename, delete or upload on any folder.
-  Moving a file doesn't rewrite `\input` or `\includegraphics` paths, so PaperWriter warns you when one still points at the old place.
-- **Export.** *Project menu → Export project as .zip* (or the download button in the Files tab) gives you the source files, ready to
-  back up, open on another platform, or import again. Share links and build output are left out.
-- **Import from anywhere.** *Project menu → Import project…* (or drag the file onto the side panel) brings in an export from
-  Overleaf, Prism, Authorea, arXiv and similar platforms: `.zip`, `.tar.gz`/`.tgz`/`.tar`, a gzipped `.tex`, or a single `.tex`.
-  The main file is detected automatically, wrapper folders and build files (`.aux`, `.log`, …) are dropped, and nothing outside the new project folder is ever written.
-- Works on phones and tablets, with light and dark themes.
+### 🙋 Join someone's workspace
 
-## AI models
+Open the invite link you were sent, or go to the workspace's address and type the **invite code** (it looks like `K7QF-3MXA`).
+Choose a display name and you're in. No account, no install.
+
+To chat with **your own AI** there, open the model menu at the top of the chat and either add your API key (it stays in your
+browser) or connect PaperWriter running on your own computer. See [Collaborators' AI](#collaborators-ai).
+
+### 🛠️ Troubleshooting
+
+| Problem | Fix |
+| --- | --- |
+| `node` isn't recognised, or a syntax error on start | Install Node.js 22.9 or newer (step 1), then open a new terminal. Check with `node -v`. |
+| Port 5178 is already in use | Another copy is running. Close it, or use another port: `PORT=5179 npm start` (PowerShell: `$env:PORT=5179; npm start`). |
+| Colleagues on Wi-Fi can't open the link | Allow Node.js through the firewall when Windows or macOS asks, and make sure **Devices on my network** is on in Share. |
+| "No LaTeX engine found" | Open **Settings → Compiler** and press **Install** next to Tectonic, or turn on the online compiler. |
+| Tectonic install fails behind a proxy | Install TeX Live or MiKTeX instead; PaperWriter uses them automatically. |
+| The page looks broken after updating | Reload with `Ctrl+Shift+R` to clear the cached app. |
+
+## ✨ Features
+
+### Writing
+
+| | |
+| :-: | --- |
+| 📝 | **Code + live PDF.** A LaTeX editor with syntax highlighting, error markers that jump to the line, and a crisp PDF preview. Click any text in the PDF to jump to that word in the source. |
+| 👁️ | **Visual editor.** Switch to **Visual** to type directly on the page. Equations render as you'd see them, and you drag blocks by their **⠿** handle to reorder. Every change is written back to the `.tex` source. |
+| 🗂️ | **Folder tree.** Collapsible folders, a filter box, drag-and-drop to move files, and rename, delete or upload on any folder. PaperWriter warns you when an `\input` or `\includegraphics` still points at a moved file. |
+| 🕰️ | **Version history.** Versions are saved automatically as people write, with who changed which files. See what changed, compare any version with now, name important moments, and restore a whole version or one file. Restoring is undoable. |
+
+### Collaboration
+
+| | |
+| :-: | --- |
+| 👥 | **Live co-editing.** Everyone's cursors and avatars, in real time. Undo only undoes your own changes. |
+| 🎟️ | **Invites by link or code.** Each invite has a link and a short code like `K7QF-3MXA`, edit or view access, an optional expiry, and can be revoked at once. |
+| 💬 | **Shared AI chat.** Everyone in a project sees everyone's AI conversations as they happen, with who asked. Each person's AI keeps only their own messages as context. |
+| 🌍 | **Reachable anywhere.** Your Wi-Fi with one switch, the internet through a free encrypted Cloudflare link, or your own server with automatic HTTPS. |
+
+### AI co-author
+
+| | |
+| :-: | --- |
+| 🤖 | **Edits you can review.** Chat with Claude, ChatGPT, Gemini or a local model. It edits your paper with diffs you can apply or revert, and fixes compile errors on request. |
+| 🔌 | **Use the AI you already have.** Claude Code with your subscription, API keys, OpenRouter, Ollama, LM Studio and other OpenAI-compatible servers. |
+| 🔑 | **Bring your own AI.** Collaborators can use the host's AI, their own API key (sent straight from their browser to the provider), or the AI on their own computer. Their keys never reach the host. |
+
+### Your data
+
+| | |
+| :-: | --- |
+| 📁 | **Files stay files.** Projects are plain folders in `projects/`, so git, Dropbox or any other editor work alongside PaperWriter. |
+| 📦 | **Import and export.** Bring in exports from Overleaf, Prism, Authorea, arXiv and others (`.zip`, `.tar.gz`, `.tex`). Export any project as a `.zip` of its sources. |
+| 🔒 | **Private by default.** Only you can open PaperWriter until you choose to share. Guests see only the project they were invited to. |
+| 📱 | **Everywhere.** Works on phones and tablets, in light and dark mode. |
+
+## 🧱 Tech stack
+
+<p>
+  <img src="https://img.shields.io/badge/Node.js-5FA04E?logo=nodedotjs&logoColor=white" alt="Node.js" />
+  <img src="https://img.shields.io/badge/JavaScript-F7DF1E?logo=javascript&logoColor=black" alt="JavaScript" />
+  <img src="https://img.shields.io/badge/Yjs-30BCED" alt="Yjs" />
+  <img src="https://img.shields.io/badge/WebSocket-010101?logo=socketdotio&logoColor=white" alt="WebSocket" />
+  <img src="https://img.shields.io/badge/CodeMirror-D30707?logo=codemirror&logoColor=white" alt="CodeMirror" />
+  <img src="https://img.shields.io/badge/PDF.js-E66000?logo=mozilla&logoColor=white" alt="PDF.js" />
+  <img src="https://img.shields.io/badge/KaTeX-329894?logo=katex&logoColor=white" alt="KaTeX" />
+  <img src="https://img.shields.io/badge/LaTeX-008080?logo=latex&logoColor=white" alt="LaTeX" />
+  <img src="https://img.shields.io/badge/esbuild-FFCF00?logo=esbuild&logoColor=black" alt="esbuild" />
+  <img src="https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white" alt="Docker" />
+  <img src="https://img.shields.io/badge/Caddy-1F88C0?logo=caddy&logoColor=white" alt="Caddy" />
+  <img src="https://img.shields.io/badge/Cloudflare_Tunnel-F38020?logo=cloudflare&logoColor=white" alt="Cloudflare Tunnel" />
+</p>
+
+| Layer | Technology | Why |
+| --- | --- | --- |
+| Server | [Node.js](https://nodejs.org) 22, built-in `http`, [ws](https://github.com/websockets/ws) | One small process with no web framework. Easy to read, easy to run anywhere. |
+| Live editing | [Yjs](https://yjs.dev), [y-websocket](https://github.com/yjs/y-websocket) protocol | Conflict-free merging, so everyone can type at once and reconnect without losing edits. |
+| Editor | [CodeMirror 5](https://codemirror.net/5/) with [y-codemirror](https://github.com/yjs/y-codemirror) | Fast LaTeX editing with shared cursors and per-person undo. |
+| PDF & math | [PDF.js](https://mozilla.github.io/pdf.js/), [KaTeX](https://katex.org), SyncTeX | Crisp preview, click-to-source, and equations in the visual editor. |
+| Typesetting | [Tectonic](https://tectonic-typesetting.github.io), or TeX Live / MiKTeX (latexmk, pdfLaTeX, XeLaTeX, LuaLaTeX) | A self-contained engine that installs itself, with full TeX distributions supported. |
+| AI | Anthropic, OpenAI, Google Gemini, OpenRouter, Ollama, OpenAI-compatible servers, Claude Code CLI | Streaming chat with the provider each person chooses. |
+| Front end | Plain JavaScript modules and CSS, no framework | Nothing to compile for the UI. [esbuild](https://esbuild.github.io) only bundles the sync client. |
+| Hosting | [Docker](https://www.docker.com), [Caddy](https://caddyserver.com), [Cloudflare quick tunnels](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/) | Automatic HTTPS on a server, or a public link from a laptop with no setup. |
+| Storage | Plain files on disk | Projects are normal folders. No database to run or back up. |
+
+## 🤖 AI models
 
 Pick a model from the pill at the top of the chat. Use whichever you have:
 
@@ -85,7 +188,9 @@ Pick a model from the pill at the top of the chat. Use whichever you have:
 
 Keys you enter in Settings are saved in `.data/settings.json` on your computer and are never sent to a browser.
 
-**Collaborators' AI.** Each invite can let its holder use *your* models (off by default; you pay for their chats). Separately,
+### Collaborators' AI
+
+Each invite can let its holder use *your* models (off by default; you pay for their chats). Separately,
 anyone you invite can use their **own** AI from the model menu, and none of it passes through your server:
 
 - **Their keys** (Claude, ChatGPT, Gemini, OpenRouter): kept in their browser and sent from it straight to the provider.
@@ -98,7 +203,7 @@ Their chats still appear in the shared chat for everyone. Turn own AI off in the
 As with any web app, the page itself comes from the host, so only add keys in workspaces you trust; the link key can be replaced
 at any time from Settings and never reveals the keys behind it.
 
-## Sharing a project
+## 🔗 Sharing a project
 
 Click **Share** in the top bar.
 
@@ -115,7 +220,7 @@ Click **Share** in the top bar.
 **Revoke** an invite at any time: anyone using it is disconnected immediately. Changing it from edit to view takes effect at once too.
 PaperWriter has to be running for guests to reach your project.
 
-## Privacy & security
+## 🔒 Privacy & security
 
 - **Your data stays local.** Projects, the live document, AI keys and chat history are kept on your computer and in your own browser.
   The only things that leave your machine are the AI requests you choose to make (to the provider you picked), the
@@ -136,7 +241,7 @@ PaperWriter has to be running for guests to reach your project.
 
 Found a security problem? Please see [SECURITY.md](SECURITY.md).
 
-## Shortcuts
+## ⌨️ Shortcuts
 
 | Keys | Action |
 | --- | --- |
@@ -148,7 +253,7 @@ Found a security problem? Please see [SECURITY.md](SECURITY.md).
 | `Ctrl+B` / `Ctrl+I` / `Ctrl+U` | Bold / italic / underline in the visual editor |
 | `Ctrl+wheel` on the PDF | Zoom |
 
-## Configuration
+## ⚙️ Configuration
 
 Optional environment variables (see [`.env.example`](.env.example); a `.env` file is loaded automatically):
 
@@ -162,7 +267,7 @@ Optional environment variables (see [`.env.example`](.env.example); a `.env` fil
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY` | — | AI keys (instead of entering them in Settings) |
 | `NO_OPEN` | — | Don't open the browser on first start |
 
-## How it works
+## 🧭 How it works
 
 | Path | What |
 | --- | --- |
@@ -182,8 +287,19 @@ Optional environment variables (see [`.env.example`](.env.example); a `.env` fil
 | `start.cmd`, `start.sh` | One-click start: installs on first run and opens the browser |
 | `scripts/build.mjs` | Copies browser libraries into `public/vendor` and bundles the sync client (runs automatically on `npm start`) |
 
-Development: `npm run dev` restarts the server when you change server code.
+New here? [CONTRIBUTING.md](CONTRIBUTING.md) walks through the code in more detail.
 
-## License
+## 🤝 Contributing
 
-[MIT](LICENSE)
+Contributions are welcome: bug reports, fixes, features, docs and translations.
+
+1. Read the [contribution guide](CONTRIBUTING.md). It covers setup, how the code is laid out, and what makes a pull request easy to merge.
+2. For anything bigger than a small fix, [open an issue](https://github.com/Shadhin-f/paperwriter/issues) first so we can agree on the approach.
+3. Fork, branch, make your change, and open a pull request. The template lists what to check.
+
+Everyone taking part is expected to follow the [code of conduct](CODE_OF_CONDUCT.md).
+Found a security problem? Please report it privately as described in [SECURITY.md](SECURITY.md), not in a public issue.
+
+## 📄 License
+
+[MIT](LICENSE). By contributing, you agree that your contributions are licensed under the same terms.
