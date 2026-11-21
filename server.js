@@ -1,11 +1,12 @@
 import http from 'node:http';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT, sendJson, readJson, readBody, HttpError } from './lib/util.js';
-import { getSettings, publicSettings, updateSettings } from './lib/settings.js';
+import { getSettings, publicSettings, updateSettings, setHostPassword, publicUrl } from './lib/settings.js';
 import * as projects from './lib/projects.js';
 import { compileProject, detectEngines, installTectonic } from './lib/compile.js';
-import { providerStatus, listModels, streamChat, buildMessages, SYSTEM_PROMPT } from './lib/ai.js';
+import { providerStatus, listModels, streamChat, buildMessages, SYSTEM_PROMPT, BYOK_PROVIDERS, PROVIDERS } from './lib/ai.js';
 import * as access from './lib/access.js';
 import { attachCollab, room, flushProject, closeRoom, kickGuests } from './lib/rooms.js';
 import * as network from './lib/network.js';
@@ -97,14 +98,45 @@ const route = (method, pattern, handler) => {
 
 /* ───────── who am I ───────── */
 
+/** Who's asking, plus what the join screen needs (the workspace name, whether host sign-in is set up). */
 route('GET', '/api/me', async (req, { who }) => {
-  if (who.owner) return { owner: true };
-  return { owner: false, projects: [...who.grants].map(([name, g]) => ({ name, role: g.role, ai: g.ai })) };
+  const s = getSettings();
+  const workspace = { name: s.workspaceName || 'PaperWriter', hostSignIn: !!s.hostPassword };
+  if (who.owner) return { owner: true, local: !!who.local, setupDone: s.setupDone, workspace };
+  return { owner: false, workspace, projects: [...who.grants].map(([name, g]) => ({ name, role: g.role, ai: g.ai })) };
+});
+
+/** Host sign-in with the password chosen during setup. */
+route('POST', '/api/login', async (req, { res }) => {
+  const { password } = await readJson(req);
+  res.setHeader('Set-Cookie', access.hostLogin(req, password));
+  return { ok: true };
+});
+
+/** Leave: forgets this browser's host sign-in and invites. */
+route('POST', '/api/logout', async (req, { res }) => {
+  res.setHeader('Set-Cookie', access.signOutCookies());
+  return { ok: true };
+});
+
+/** Join with a typed invite code (the short form of a share link). */
+route('POST', '/api/join', async (req, { res }) => {
+  const { code } = await readJson(req);
+  const r = await access.joinWithCode(req, code);
+  res.setHeader('Set-Cookie', r.cookie);
+  return { project: r.project };
 });
 
 /* ───────── settings & AI ───────── */
 
 const guestCanUseAI = (who) => [...who.grants.values()].some((g) => g.ai);
+const byokList = () => BYOK_PROVIDERS.map((id) => ({ id, label: PROVIDERS[id].label, sub: PROVIDERS[id].sub }));
+
+/** A collaborator's own key may be used if the host allows it, for the few providers with a fixed public address. */
+function checkOwnKey(who, provider) {
+  if (!BYOK_PROVIDERS.includes(provider)) throw new HttpError(400, 'Your own key works with Claude, ChatGPT, Gemini and OpenRouter.');
+  if (!who.owner && !getSettings().guestKeys) throw new HttpError(403, 'The host has turned off using your own AI keys.');
+}
 
 route('GET', '/api/status', async (req, { who }) => {
   if (who.owner) {
@@ -116,12 +148,15 @@ route('GET', '/api/status', async (req, { who }) => {
   if (guestCanUseAI(who)) {
     for (const [id, p] of Object.entries(await providerStatus())) providers[id] = { id, label: p.label, sub: p.sub, kind: p.kind, available: p.available, detail: p.available ? 'Provided by the owner' : 'Not available' };
   }
-  return { settings: { engine: getSettings().engine }, engines: {}, providers, guest: true };
+  const s = getSettings();
+  return { settings: { engine: s.engine }, engines: {}, providers, guest: true, guestKeys: s.guestKeys, byok: s.guestKeys ? byokList() : [] };
 });
 
 route('POST', '/api/settings', async (req, { who }) => {
   access.requireOwner(who);
-  const settings = updateSettings(await readJson(req));
+  const body = await readJson(req);
+  if (typeof body.hostPassword === 'string') setHostPassword(body.hostPassword);
+  const settings = updateSettings(body);
   return { settings, providers: await providerStatus(true) };
 });
 
@@ -135,12 +170,23 @@ route('GET', '/api/models', async (req, { who, url }) => {
   return { models: await listModels(url.searchParams.get('provider')) };
 });
 
+/** Models for a collaborator's own key (sent in the body so it never lands in logs or history). */
+route('POST', '/api/models', async (req, { who }) => {
+  const { provider, key, project } = await readJson(req);
+  if (!who.owner) access.requireProject(who, String(project || ''), 'viewer');
+  checkOwnKey(who, provider);
+  if (typeof key !== 'string' || !key.trim()) throw new HttpError(400, 'Paste your API key first.');
+  return { models: await listModels(provider, key.trim()) };
+});
+
 /** Streams the model's reply as server-sent events. */
 route('POST', '/api/chat', async (req, { who, res }) => {
   const body = await readJson(req);
+  const ownKey = typeof body.key === 'string' ? body.key.trim() : '';
+  if (ownKey) checkOwnKey(who, body.provider);
   if (!who.owner) {
     const g = access.requireProject(who, String(body.project || ''), 'viewer');
-    if (!g.ai) throw new HttpError(403, 'The owner hasn’t enabled AI for your link.');
+    if (!g.ai && !ownKey) throw new HttpError(403, 'The host hasn’t shared their AI with your invite. Add your own key to chat.');
   }
   const messages = buildMessages(body.messages, body.context);
   const ctrl = new AbortController();
@@ -149,7 +195,7 @@ route('POST', '/api/chat', async (req, { who, res }) => {
   const send = (obj) => !res.writableEnded && res.write(`data: ${JSON.stringify(obj)}\n\n`);
   send({ type: 'start' });
   try {
-    for await (const text of streamChat({ provider: body.provider, model: body.model, system: SYSTEM_PROMPT, messages, signal: ctrl.signal })) send({ type: 'text', text });
+    for await (const text of streamChat({ provider: body.provider, model: body.model, system: SYSTEM_PROMPT, messages, signal: ctrl.signal, key: ownKey })) send({ type: 'text', text });
     send({ type: 'done' });
   } catch (e) {
     if (!ctrl.signal.aborted) send({ type: 'error', error: e.message || String(e) });
@@ -327,6 +373,7 @@ function networkInfo() {
     lanLocked: !!hostFromEnv,
     addresses: lan ? network.lanAddresses().map((a) => `http://${a.address}:${PORT}`) : [],
     tunnel: network.tunnelStatus(),
+    publicUrl: publicUrl(),
   };
 }
 
@@ -374,6 +421,14 @@ const server = http.createServer(async (req, res) => {
       const r = await access.joinWithToken(req, m[1]);
       return r.ok ? redirect(res, `/?project=${encodeURIComponent(r.project)}`, r.cookie) : redirect(res, '/?link=invalid');
     }
+    if ((m = pathname.match(/^\/j\/([A-Za-z0-9-]{8,12})$/))) {
+      try {
+        const r = await access.joinWithCode(req, m[1]);
+        return redirect(res, `/?project=${encodeURIComponent(r.project)}`, r.cookie);
+      } catch {
+        return redirect(res, '/?link=invalid');
+      }
+    }
     if ((m = pathname.match(/^\/owner\/([A-Za-z0-9_-]{16,64})$/))) {
       const cookie = access.ownerLogin(req, m[1]);
       return cookie ? redirect(res, '/', cookie) : redirect(res, '/?link=invalid');
@@ -410,6 +465,16 @@ attachCollab(server, async (req, project) => {
   return who.owner ? 'owner' : g.role;
 });
 
+const IN_CONTAINER = !!process.env.PW_DOCKER || fs.existsSync('/.dockerenv');
+
+/** Opens the app in the default browser (first run, or when started from the start scripts). */
+function openBrowser(url) {
+  const [cmd, args] = process.platform === 'win32' ? ['cmd', ['/c', 'start', '""', url]] : process.platform === 'darwin' ? ['open', [url]] : ['xdg-open', [url]];
+  try {
+    spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true }).on('error', () => {}).unref();
+  } catch {}
+}
+
 /** (Re)binds the server: 127.0.0.1 = only this computer, 0.0.0.0 = also other devices on the network. */
 function listen(host) {
   return new Promise((resolve, reject) => {
@@ -436,6 +501,14 @@ process.on('uncaughtException', (e) => console.error('[server] uncaught error:',
 await projects.ensureWelcomeProject();
 await listen(hostFromEnv || (getSettings().lanAccess ? '0.0.0.0' : '127.0.0.1'));
 const info = networkInfo();
-console.log(`\n  PaperWriter is running → http://localhost:${PORT}`);
+const local = `http://localhost:${PORT}`;
+const ownerLink = `${info.publicUrl || `http://<this-computer>:${PORT}`}/owner/${access.ownerSecret()}`;
+console.log(`\n  PaperWriter is running → ${local}`);
+if (info.publicUrl) console.log(`  Public address          → ${info.publicUrl}`);
 if (info.lan) for (const a of info.addresses) console.log(`  On your network         → ${a}`);
-console.log(`\n  Owner sign-in from another device (keep this private):\n  http://<this-computer>:${PORT}/owner/${access.ownerSecret()}\n`);
+if (!getSettings().setupDone) {
+  console.log(`\n  ▸ Finish setup in your browser: ${IN_CONTAINER ? ownerLink : local}`);
+  if (IN_CONTAINER) console.log('    (open this link once: it signs you in as the host)');
+}
+console.log(`\n  Host sign-in link for other devices (keep this private):\n  ${ownerLink}\n`);
+if (!IN_CONTAINER && !process.env.NO_OPEN && process.stdout.isTTY && (process.env.PW_OPEN === '1' || !getSettings().setupDone)) openBrowser(local);

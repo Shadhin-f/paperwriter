@@ -51,6 +51,7 @@ const ICONS = {
   link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
   mail: '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 5L2 7"/>',
   eye: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
+  arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
   logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>',
   globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',
   folderOpen: '<path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/>',
@@ -127,6 +128,27 @@ const canEdit = () => !!state.ws?.canEdit;
 const PROVIDER_ORDER = ['claude-cli', 'anthropic', 'openai', 'gemini', 'ollama', 'compat', 'gemini-cli', 'codex-cli'];
 const PREFERRED_MODEL = { 'claude-cli': 'sonnet', anthropic: 'claude-sonnet-5-5', openai: 'gpt-5', gemini: 'gemini-2.5-pro', 'gemini-cli': 'default', 'codex-cli': 'default' };
 const P = () => enc(state.project);
+
+/* A collaborator's own API keys live only in this browser and go with each request; the server never stores them. */
+const OWN = 'own:';
+const isOwn = (id) => String(id || '').startsWith(OWN);
+const ownId = (id) => String(id || '').slice(OWN.length);
+function ownKeys() {
+  try {
+    return JSON.parse(localStorage.getItem('pw.ownKeys') || '{}');
+  } catch {
+    return {};
+  }
+}
+function setOwnKey(id, key) {
+  const k = ownKeys();
+  if (key) k[id] = key;
+  else delete k[id];
+  try {
+    localStorage.setItem('pw.ownKeys', JSON.stringify(k));
+  } catch {}
+}
+const byok = () => state.status?.byok || [];
 
 /* ───────────────────────── api helpers ───────────────────────── */
 
@@ -226,12 +248,12 @@ function openModal(html, { onClose } = {}) {
   return { el: $('.modal', m), close };
 }
 
-function askText(title, { value = '', placeholder = '', okLabel = 'OK', extra = '' } = {}) {
+function askText(title, { value = '', placeholder = '', okLabel = 'OK', extra = '', type = 'text', note = '' } = {}) {
   return new Promise((resolve) => {
     let done = false;
     const { el, close } = openModal(
       `<div class="modal-head"><h2>${esc(title)}</h2><button class="icon-btn" data-close>${icon('x')}</button></div>
-       <form class="modal-body"><input class="input" name="v" value="${esc(value)}" placeholder="${esc(placeholder)}" autocomplete="off" />${extra}</form>
+       <form class="modal-body"><input class="input" name="v" type="${type}" value="${esc(value)}" placeholder="${esc(placeholder)}" autocomplete="off" spellcheck="false" />${extra}${note ? `<p class="note">${note}</p>` : ''}</form>
        <div class="modal-foot"><button class="btn-ghost" data-close>Cancel</button><button class="btn-primary" data-ok>${esc(okLabel)}</button></div>`,
       { onClose: () => !done && resolve(null) },
     );
@@ -1081,7 +1103,7 @@ function showNoEngine() {
   if (state.pdfDoc) return;
   empty.hidden = false;
   if (!isOwner()) {
-    empty.innerHTML = `<img src="/logo.svg" alt="" width="72" height="72" class="bob" /><h3>No PDF yet</h3><p>The owner hasn’t set up a LaTeX engine on their computer yet.</p>`;
+    empty.innerHTML = `<img src="/logo.svg" alt="" width="72" height="72" class="bob" /><h3>No PDF yet</h3><p>The host hasn’t set up a LaTeX engine yet.</p>`;
     return;
   }
   empty.innerHTML = `
@@ -1381,15 +1403,26 @@ async function refreshStatus() {
 }
 
 function providerInfo(id) {
+  if (isOwn(id)) {
+    const b = byok().find((x) => x.id === ownId(id));
+    if (!b) return null;
+    const has = !!ownKeys()[b.id];
+    return { id, label: b.label, available: has, own: true, detail: has ? 'Your key · stays in this browser' : `Add your ${b.label} key to use it` };
+  }
   return state.status?.providers?.[id];
 }
 
 async function ensureModelChoice() {
   const provs = state.status?.providers || {};
-  if (prefs.provider && provs[prefs.provider] && prefs.model) return;
-  const pick = PROVIDER_ORDER.find((p) => provs[p]?.available) || 'claude-cli';
+  if (prefs.provider && providerInfo(prefs.provider) && prefs.model) return;
+  let pick = PROVIDER_ORDER.find((p) => provs[p]?.available);
+  if (!pick && byok().length) {
+    const keys = ownKeys();
+    pick = OWN + (byok().find((b) => keys[b.id]) || byok()[0]).id;
+  }
+  pick ||= 'claude-cli';
   prefs.provider = pick;
-  prefs.model = PREFERRED_MODEL[pick] || null;
+  prefs.model = PREFERRED_MODEL[isOwn(pick) ? ownId(pick) : pick] || null;
   if (!prefs.model) {
     try {
       const models = await getModels(pick);
@@ -1402,7 +1435,12 @@ async function ensureModelChoice() {
 
 async function getModels(provider, force = false) {
   if (!force && state.modelCache[provider]) return state.modelCache[provider];
-  const { models } = await api(`/api/models?provider=${enc(provider)}`);
+  let models;
+  if (isOwn(provider)) {
+    const key = ownKeys()[ownId(provider)];
+    if (!key) throw new Error('Add your key above to see its models.');
+    ({ models } = await api('/api/models', { method: 'POST', body: { provider: ownId(provider), key, project: state.project } }));
+  } else ({ models } = await api(`/api/models?provider=${enc(provider)}`));
   state.modelCache[provider] = models;
   return models;
 }
@@ -1418,24 +1456,38 @@ function renderModelPill() {
 
 function openModelPicker(selected = prefs.provider) {
   const provs = state.status?.providers || {};
+  const hostTitle = (t) => (isOwner() ? t : `Shared by the host · ${t}`);
   const groups = [
-    ['Logged-in CLI', ['claude-cli', 'gemini-cli', 'codex-cli']],
-    ['Cloud API', ['anthropic', 'openai', 'gemini']],
-    ['Local machine', ['ollama', 'compat']],
+    [hostTitle('Logged-in CLI'), ['claude-cli', 'gemini-cli', 'codex-cli']],
+    [hostTitle('Cloud API'), ['anthropic', 'openai', 'gemini', 'openrouter']],
+    [hostTitle('Local machine'), ['ollama', 'compat']],
+    ...(!isOwner() && byok().length ? [['Your own key', byok().map((b) => OWN + b.id)]] : []),
   ];
-  const info = provs[selected];
+  const shown = (id) => {
+    const p = providerInfo(id);
+    if (!p) return false;
+    if (p.own) return true;
+    if (!isOwner()) return p.available && state.ai;
+    return p.available || !id.endsWith('-cli') || id === 'claude-cli';
+  };
+  const info = providerInfo(selected);
+  const action = !info ? '' : info.own ? ` · <a data-own-key="${esc(ownId(selected))}">${info.available ? 'Change key' : 'Add key'}</a>` : !info.available && isOwner() ? ` · <a data-open-settings>Set up</a>` : '';
   const html = `
     ${groups
+      .map(([title, ids]) => [title, ids.filter(shown)])
+      .filter(([, ids]) => ids.length)
       .map(
         ([title, ids]) => `<div class="pop-title">${title}</div><div class="provider-grid">
         ${ids
-          .filter((id) => provs[id] && (provs[id].available || !id.endsWith('-cli') || id === 'claude-cli'))
-          .map((id) => `<button class="prov ${id === selected ? 'active' : ''}" data-prov="${id}" title="${esc(provs[id].detail)}"><span class="dot ${provs[id].available ? 'on' : 'off'}"></span><span>${esc(provs[id].label)}</span></button>`)
+          .map((id) => {
+            const p = providerInfo(id);
+            return `<button class="prov ${id === selected ? 'active' : ''}" data-prov="${id}" title="${esc(p.detail)}"><span class="dot ${p.available ? 'on' : 'off'}"></span><span>${esc(p.label)}</span></button>`;
+          })
           .join('')}</div>`,
       )
       .join('')}
     <div class="pop-sep"></div>
-    <div class="prov-detail">${esc(info?.detail || '')}${info && !info.available ? ` · <a data-open-settings>Set up</a>` : ''}</div>
+    <div class="prov-detail">${esc(info?.detail || 'Pick where your co-author runs.')}${action}</div>
     <div class="pop-title">Model</div>
     <div class="model-list" id="modelList"><div class="pop-item"><span class="spinner"></span><span class="grow">Loading models…</span></div></div>
     <div class="pop-row"><input class="input" id="customModel" placeholder="Custom model id…" value="" /><button class="chip-btn accent" id="useCustom">Use</button></div>`;
@@ -1446,6 +1498,11 @@ function openModelPicker(selected = prefs.provider) {
     if (e.target.closest('[data-open-settings]')) {
       closePopover();
       return openSettings('ai');
+    }
+    const own = e.target.closest('[data-own-key]');
+    if (own) {
+      closePopover();
+      return askOwnKey(own.dataset.ownKey).then((ok) => ok && openModelPicker(OWN + own.dataset.ownKey));
     }
     const m = e.target.closest('[data-model]');
     if (m) chooseModel(selected, m.dataset.model);
@@ -1475,6 +1532,25 @@ function openModelPicker(selected = prefs.provider) {
     .catch((e) => {
       $('#modelList').innerHTML = `<div class="prov-detail">${esc(e.message)}</div>`;
     });
+}
+
+/** Asks a collaborator for their own API key. It's saved in this browser only. */
+async function askOwnKey(id) {
+  const b = byok().find((x) => x.id === id);
+  const links = { anthropic: 'console.anthropic.com', openai: 'platform.openai.com/api-keys', gemini: 'aistudio.google.com/apikey', openrouter: 'openrouter.ai/keys' };
+  const key = await askText(`Your ${b?.label || id} key`, {
+    type: 'password',
+    placeholder: 'Paste your API key',
+    okLabel: 'Save key',
+    note: `Get one at ${links[id] || 'your provider'}. It stays in this browser and is sent only with your own chats, never saved by the host.${ownKeys()[id] ? ' Leave empty and save to remove it.' : ''}`,
+  });
+  if (key === null) return false;
+  setOwnKey(id, key);
+  delete state.modelCache[OWN + id];
+  renderModelPill();
+  renderChatAccess();
+  toast(key ? 'Key saved in this browser' : 'Key removed', 'ok');
+  return true;
 }
 
 function chooseModel(provider, model) {
@@ -1790,6 +1866,8 @@ async function send(text) {
   text = (text || '').trim();
   if (!text || state.streaming) return;
   if (!prefs.provider || !prefs.model) return openModelPicker();
+  const ownKey = isOwn(prefs.provider) ? ownKeys()[ownId(prefs.provider)] : '';
+  if (isOwn(prefs.provider) && !ownKey) return askOwnKey(ownId(prefs.provider));
   const sel = state.useSelection ? selectionInfo() : null;
   const userMsg = { id: uid(), role: 'user', content: text, file: state.file, sel: sel ? `L${sel.fromLine}${sel.toLine !== sel.fromLine ? `–${sel.toLine}` : ''}` : null };
   const msg = { id: uid(), role: 'assistant', content: '', provider: prefs.provider, model: prefs.model, file: state.file, edits: [], code: [], streaming: true };
@@ -1815,7 +1893,7 @@ async function send(text) {
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ project: state.project, provider: msg.provider, model: msg.model, messages: history, context }),
+      body: JSON.stringify({ project: state.project, provider: isOwn(msg.provider) ? ownId(msg.provider) : msg.provider, key: ownKey || undefined, model: msg.model, messages: history, context }),
       signal: ctrl.signal,
     });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
@@ -2110,10 +2188,8 @@ async function boot() {
   setSendMode(false);
   if (isMobile()) setView('editor');
   const params = new URLSearchParams(location.search);
-  if (params.get('link') === 'invalid') {
-    history.replaceState(null, '', location.pathname);
-    return showPrivate('invalid');
-  }
+  const invalidLink = params.get('link') === 'invalid';
+  if (invalidLink) history.replaceState(null, '', location.pathname);
   try {
     state.me = await api('/api/me');
   } catch (e) {
@@ -2127,7 +2203,9 @@ async function boot() {
     $('#authScreen').hidden = true;
     return toast(`PaperWriter couldn't load part of the app (${e.message}). Press Ctrl+Shift+R to reload it.`, 'err', 15000);
   }
-  if (!state.me.owner && !state.me.projects.length) return showPrivate();
+  if (invalidLink && !state.me.owner) return showWelcome('invalid');
+  if (!state.me.owner && !state.me.projects.length) return showWelcome();
+  if (state.me.owner && !state.me.setupDone) await runSetup();
   $('#authScreen').hidden = true;
   document.body.classList.toggle('guest', !state.me.owner);
   if (!state.me.owner) await askNameOnce();
@@ -2191,7 +2269,7 @@ function applyEditorMode() {
 function myIdentity() {
   let id = localStorage.getItem('pw.id');
   if (!id) localStorage.setItem('pw.id', (id = uid() + uid()));
-  const name = localStorage.getItem('pw.name') || (isOwner() ? 'Owner' : 'Guest');
+  const name = localStorage.getItem('pw.name') || (isOwner() ? 'Host' : 'Guest');
   return { name, color: state.collab.colorFor(id) };
 }
 
@@ -2217,14 +2295,44 @@ function openAccountMenu() {
   const me = myIdentity();
   const pop = openPopover(
     $('#accountBtn'),
-    `<div class="pop-title">${isOwner() ? 'You own this PaperWriter' : 'You’re a guest'}</div>
+    `<div class="pop-title">${isOwner() ? `You host ${esc(state.me.workspace?.name || 'this workspace')}` : `Guest in ${esc(state.me.workspace?.name || 'this workspace')}`}</div>
      <div class="pop-item"><span class="grow"><span>${esc(me.name)}</span><span class="sub">Shown to collaborators</span></span></div>
      <div class="pop-sep"></div>
-     <button class="pop-item" data-rename>${icon('pencil')}<span class="grow">Change your name</span></button>`,
+     <button class="pop-item" data-rename>${icon('pencil')}<span class="grow">Change your name</span></button>
+     ${isOwner() ? `<button class="pop-item" data-setup>${icon('settings')}<span class="grow">Open the setup guide</span></button>` : `<button class="pop-item" data-join>${icon('link')}<span class="grow">Join with an invite code</span></button>`}
+     ${!isOwner() && byok().length ? `<button class="pop-item" data-keys>${icon('sparkle')}<span class="grow">Your AI keys</span></button>` : ''}
+     ${isOwner() && state.me.local ? '' : `<div class="pop-sep"></div><button class="pop-item btn-danger" data-signout>${icon('logout')}<span class="grow">${isOwner() ? 'Sign out' : 'Leave this workspace'}</span></button>`}`,
   );
   const r = $('#accountBtn').getBoundingClientRect();
   pop.style.left = `${Math.max(10, r.right - pop.offsetWidth)}px`;
   pop.onclick = async (e) => {
+    if (e.target.closest('[data-setup]')) {
+      closePopover();
+      await runSetup();
+      return location.reload();
+    }
+    if (e.target.closest('[data-join]')) {
+      closePopover();
+      const code = await askText('Join with an invite code', { placeholder: 'XXXX-XXXX', okLabel: 'Join' });
+      if (!code) return;
+      try {
+        const { project } = await api('/api/join', { method: 'POST', body: { code } });
+        location.href = `/?project=${enc(project)}`;
+      } catch (err) {
+        toast(err.message, 'err', 5000);
+      }
+      return;
+    }
+    if (e.target.closest('[data-keys]')) {
+      closePopover();
+      return openModelPicker(isOwn(prefs.provider) ? prefs.provider : OWN + byok()[0].id);
+    }
+    if (e.target.closest('[data-signout]')) {
+      closePopover();
+      if (!(await confirmBox(isOwner() ? 'Sign out?' : 'Leave this workspace?', isOwner() ? 'You can sign in again with your host password.' : 'You’ll need an invite again to come back.', isOwner() ? 'Sign out' : 'Leave'))) return;
+      await api('/api/logout', { method: 'POST' });
+      return location.replace('/');
+    }
     if (!e.target.closest('[data-rename]')) return;
     closePopover();
     const name = await askText('Your name', { value: me.name, placeholder: 'How collaborators see you', okLabel: 'Save' });
@@ -2251,26 +2359,337 @@ function renderSyncStatus() {
 
 /** Guests only get AI when the owner switched it on for their link. */
 function renderChatAccess() {
-  const locked = !isOwner() && !state.ai;
+  const locked = !isOwner() && !state.ai && !byok().length;
   $('#composer').classList.toggle('locked', locked);
   $('#prompt').disabled = locked;
-  $('#prompt').placeholder = locked ? 'The owner hasn’t enabled AI for your link.' : 'Ask your co-author to write or edit…';
+  $('#prompt').placeholder = locked ? 'The host hasn’t shared AI with your invite.' : 'Ask your co-author to write or edit…';
   $('#modelBtn').disabled = locked;
 }
 
-/* ───────────────────────── private / invalid link screens ───────────────────────── */
+/* ───────────────────────── welcome (join) screen & setup guide ───────────────────────── */
 
-function showPrivate(reason) {
+/** The front door for anyone who isn't the host yet: enter an invite code, or sign in as the host. */
+function showWelcome(reason) {
   const el = $('#authScreen');
   el.hidden = false;
-  const invalid = reason === 'invalid';
+  const ws = state.me?.workspace || { name: 'PaperWriter', hostSignIn: false };
   el.innerHTML = `
-    <div class="auth-card">
-      <img src="/logo.svg" alt="" width="52" height="52" />
-      <h1>${invalid ? 'This link doesn’t work' : 'This PaperWriter is private'}</h1>
-      <p>${invalid ? 'It may have been revoked, or copied incompletely. Ask the person who shared it for a new link.' : 'Open the share link you were sent to see the project shared with you.'}</p>
-      <p class="note">Running your own copy? Open it at <code>http://localhost:${location.port || 5178}</code> on the computer where it runs.</p>
+    <div class="welcome">
+      <div class="welcome-copy">
+        <div class="welcome-brand"><img src="/logo.svg" alt="" width="36" height="36" /><span>${esc(ws.name)}</span></div>
+        <h1 class="display">Write <em>together.</em></h1>
+        <p class="lede">Enter the invite code you were sent to open the paper shared with you.</p>
+        <form class="code-form" id="codeForm" autocomplete="off">
+          <input class="code-input" id="codeInput" autocapitalize="characters" spellcheck="false" maxlength="9" placeholder="XXXX-XXXX" aria-label="Invite code" />
+          <button class="btn-primary pill" type="submit"><span>Join</span>${icon('arrow')}</button>
+        </form>
+        <p class="form-msg ${reason === 'invalid' ? 'err' : ''}" id="codeMsg" role="status">${
+          reason === 'invalid' ? 'That invite link doesn’t work any more. It may have expired or been revoked. Ask for a new one, or enter its code.' : 'Codes look like K7QF-3MXA. Opening an invite link works too.'
+        }</p>
+        <div class="host-entry">
+          ${
+            ws.hostSignIn
+              ? `<button class="link-btn" id="hostBtn" type="button">Hosting this workspace? Sign in</button>
+                 <form class="host-form" id="hostForm" hidden>
+                   <input class="input" type="password" name="password" placeholder="Host password" autocomplete="current-password" aria-label="Host password" />
+                   <button class="btn-ghost" type="submit">Sign in</button>
+                 </form>`
+              : `<p class="note">Hosting this workspace? Open it on the computer where it runs, or use the host link it printed when it started.</p>`
+          }
+        </div>
+      </div>
+      <div class="welcome-art" aria-hidden="true">
+        <div class="sheet">
+          <div class="sheet-title">A Short Proof of the Spectral Gap</div>
+          <div class="sheet-authors">M. Okafor &nbsp;·&nbsp; J. Lindqvist</div>
+          <p class="sheet-abstract"><b>Abstract.</b> We show that the spectral gap of the random walk on the slice is at least <i>c/n</i>, where <span class="peer-sel" style="--c:#0a84ff">the constant <i>c</i> does not depend on <i>n</i></span><span class="peer-caret" style="--c:#0a84ff" data-name="Maya"></span>.</p>
+          <p class="sheet-h">1&ensp;Introduction</p>
+          <p>Mixing times of Markov chains have been studied for decades. Here we give a short proof using a coupling<span class="peer-caret late" style="--c:#ff9f0a" data-name="Jon"></span> argument, and</p>
+          <div class="sheet-lines"><span></span><span></span><span></span><span></span><span></span><span></span></div>
+        </div>
+      </div>
     </div>`;
+  hydrateIcons(el);
+  const input = $('#codeInput', el);
+  const msg = $('#codeMsg', el);
+  input.focus();
+  input.addEventListener('input', () => {
+    const raw = input.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+    input.value = raw.length > 4 ? `${raw.slice(0, 4)}-${raw.slice(4)}` : raw;
+    msg.classList.remove('err');
+  });
+  $('#codeForm', el).addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = $('button', e.target);
+    if (input.value.replace(/-/g, '').length !== 8) {
+      msg.textContent = 'An invite code has 8 letters and numbers.';
+      msg.classList.add('err');
+      return input.focus();
+    }
+    btn.disabled = true;
+    try {
+      const { project } = await api('/api/join', { method: 'POST', body: { code: input.value } });
+      location.href = `/?project=${enc(project)}`;
+    } catch (err) {
+      msg.textContent = err.message;
+      msg.classList.add('err');
+      btn.disabled = false;
+    }
+  });
+  $('#hostBtn', el)?.addEventListener('click', (e) => {
+    e.currentTarget.hidden = true;
+    $('#hostForm', el).hidden = false;
+    $('#hostForm input', el).focus();
+  });
+  $('#hostForm', el)?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      await api('/api/login', { method: 'POST', body: { password: e.target.password.value } });
+      location.replace('/');
+    } catch (err) {
+      msg.textContent = err.message;
+      msg.classList.add('err');
+    }
+  });
+}
+
+/**
+ * The first-run guide for the host: workspace name, who can join, AI, and the LaTeX engine.
+ * Every step saves as you go and can be skipped; it all lives in Settings and Share afterwards.
+ */
+async function runSetup() {
+  const el = $('#authScreen');
+  el.hidden = false;
+  el.innerHTML = '<span class="spinner" aria-label="Loading"></span>';
+  let [st, net] = await Promise.all([api('/api/status'), api('/api/network')]);
+  const s = st.settings;
+  const local = !!state.me.local;
+  const reaches = [
+    ...(local && !net.lanLocked ? [['local', 'lock', 'Just me, for now', 'PaperWriter stays private to this computer. You can open it up any time from Share.']] : []),
+    ...(!net.lanLocked ? [['network', 'users', 'People on my network', 'Colleagues on the same Wi-Fi or office network join with an invite.']] : []),
+    ['internet', 'globe', 'Anyone, from anywhere', 'A free, encrypted Cloudflare link. No account or router setup. The address changes each time PaperWriter starts.'],
+    ['server', 'link', 'This is a server with a domain', 'Collaborators use your own address, like papers.example.org. Serve it over HTTPS (the included docker-compose does this).'],
+  ];
+  const draft = {
+    workspaceName: s.workspaceName || '',
+    name: localStorage.getItem('pw.name') || '',
+    reach: s.publicUrl ? 'server' : net.tunnel.running ? 'internet' : net.lan ? 'network' : reaches[0][0],
+    publicUrl: s.publicUrl || '',
+    password: '',
+    aiProvider: 'anthropic',
+    guestKeys: s.guestKeys !== false,
+    defaultLinkAI: !!s.defaultLinkAI,
+    allowOnline: !!s.allowOnline,
+  };
+  const steps = ['Workspace', 'Sharing', 'AI', 'LaTeX'];
+  let i = 0;
+  let installing = null;
+  const save = (body) => api('/api/settings', { method: 'POST', body });
+  const needsPassword = () => !s.hasHostPassword && (!local || draft.reach === 'server');
+
+  const engines = () => Object.entries(st.engines || {}).filter(([, v]) => v).map(([k]) => k);
+  const views = [
+    () => `
+      <h1 class="display-sm">Welcome to PaperWriter.</h1>
+      <p class="lede">A few choices and you’re writing. Everything here can be changed later.</p>
+      <label class="field"><span>Workspace name</span><input class="input lg" name="workspaceName" value="${esc(draft.workspaceName)}" placeholder="e.g. Chen Lab, or Thesis 2026" maxlength="60" /><small>Collaborators see this when they join.</small></label>
+      <label class="field"><span>Your name</span><input class="input lg" name="name" value="${esc(draft.name)}" placeholder="Shown next to your cursor" maxlength="40" /></label>`,
+    () => `
+      <h1 class="display-sm">Who will write with you?</h1>
+      <p class="lede">Everyone you invite gets a link and a short code. Nobody gets in without one.</p>
+      <div class="choices" role="radiogroup">
+        ${reaches
+          .map(
+            ([id, ic, title, sub]) => `<label class="choice ${draft.reach === id ? 'on' : ''}"><input type="radio" name="reach" value="${id}" ${draft.reach === id ? 'checked' : ''} />
+              <span class="choice-icon">${icon(ic)}</span><span class="grow"><b>${title}</b><small>${sub}</small></span><span class="radio"></span></label>`,
+          )
+          .join('')}
+      </div>
+      ${
+        draft.reach === 'server'
+          ? `<label class="field"><span>Public address</span><input class="input lg" name="publicUrl" value="${esc(s.publicUrl || draft.publicUrl)}" placeholder="https://papers.example.org" ${s.publicUrlFromEnv ? 'disabled' : ''} />
+             <small>${s.publicUrlFromEnv ? 'Set by the DOMAIN or PUBLIC_URL setting on the server.' : 'The address people type to reach this PaperWriter.'}</small></label>`
+          : ''
+      }
+      ${
+        draft.reach !== 'local'
+          ? `<label class="field"><span>Host password ${needsPassword() ? '' : '<em>optional</em>'}</span><input class="input lg" type="password" name="password" autocomplete="new-password" placeholder="${s.hasHostPassword ? 'Leave empty to keep your current password' : 'At least 8 characters'}" />
+             <small>Lets you sign in as the host from any device.</small></label>`
+          : ''
+      }`,
+    () => {
+      const found = Object.values(st.providers || {}).filter((p) => p.available);
+      const keyFor = (id) => s.keyStatus[id]?.set;
+      return `
+      <h1 class="display-sm">Choose your co-author.</h1>
+      <p class="lede">PaperWriter works with the AI you already have. Add one now, or skip and decide later.</p>
+      ${
+        found.length
+          ? `<ul class="found">${found.map((p) => `<li>${icon('check')}<span class="grow"><b>${esc(p.label)}</b><small>${esc(p.detail)}</small></span></li>`).join('')}</ul>`
+          : '<p class="note">No AI found on this computer yet. Paste a key below to use one.</p>'
+      }
+      <div class="field"><span>Add an API key</span>
+        <div class="seg pills" role="tablist">${[['anthropic', 'Claude'], ['openai', 'ChatGPT'], ['gemini', 'Gemini'], ['openrouter', 'OpenRouter']]
+          .map(([id, label]) => `<button type="button" class="seg-btn ${draft.aiProvider === id ? 'active' : ''}" data-ai="${id}">${label}${keyFor(id) ? ' ✓' : ''}</button>`)
+          .join('')}</div>
+        <input class="input lg mono" type="password" name="aiKey" autocomplete="off" placeholder="${keyFor(draft.aiProvider) ? 'Key saved. Paste a new one to replace it' : 'Paste your key'}" />
+        <small>Saved only on this server, never sent to anyone’s browser.</small>
+      </div>
+      <div class="setting-card">
+        <div class="setting-row"><span class="label"><b>Collaborators can use their own AI keys</b><small>Their key stays in their browser and pays for their own chats.</small></span><label class="toggle"><input type="checkbox" name="guestKeys" ${draft.guestKeys ? 'checked' : ''} /><span class="track"></span></label></div>
+        <div class="setting-row"><span class="label"><b>New invites can use my AI</b><small>Their chats then use your keys or subscription, and its cost. You can change it per invite.</small></span><label class="toggle"><input type="checkbox" name="defaultLinkAI" ${draft.defaultLinkAI ? 'checked' : ''} /><span class="track"></span></label></div>
+      </div>`;
+    },
+    () => {
+      const have = engines();
+      return `
+      <h1 class="display-sm">Set up typesetting.</h1>
+      <p class="lede">PaperWriter turns your LaTeX into a PDF as you type.</p>
+      ${
+        have.length
+          ? `<div class="status-line ok">${icon('check')}<span>Ready. Found ${have.map(esc).join(', ')}.</span></div>`
+          : installing === 'failed'
+            ? `<div class="status-line err">${icon('alert')}<span>Tectonic couldn’t be installed. Check the internet connection and try again, or compile online.</span></div>
+               <button class="btn-ghost" type="button" data-install>Try again</button>`
+            : `<div class="status-line">${installing ? '<span class="spinner"></span>' : icon('download')}<span>${installing ? 'Installing Tectonic, a small self-contained LaTeX engine (about 30 MB)…' : 'Preparing to install Tectonic…'}</span></div>`
+      }
+      <div class="setting-card">
+        <div class="setting-row"><span class="label"><b>Compile online when no engine is installed</b><small>Sends the project’s text files to texlive.net.</small></span><label class="toggle"><input type="checkbox" name="allowOnline" ${draft.allowOnline ? 'checked' : ''} /><span class="track"></span></label></div>
+      </div>`;
+    },
+    () => `
+      <div class="done-mark">${icon('check')}</div>
+      <h1 class="display-sm">You’re all set.</h1>
+      <p class="lede">Open a paper and press <b>Share</b> to invite people. Each invite has a link and a short code they can type.</p>`,
+  ];
+
+  // Read the inputs on the current step into the draft.
+  const collect = () => {
+    for (const inp of $$('.setup-stage [name]', el)) {
+      if (inp.type === 'radio') {
+        if (inp.checked) draft[inp.name] = inp.value;
+      } else if (inp.type === 'checkbox') draft[inp.name] = inp.checked;
+      else if (!inp.disabled) draft[inp.name] = inp.value.trim();
+    }
+  };
+
+  const apply = async () => {
+    collect();
+    if (i === 0) {
+      if (draft.name) localStorage.setItem('pw.name', draft.name.slice(0, 40));
+      await save({ workspaceName: draft.workspaceName });
+      state.me.workspace = { ...state.me.workspace, name: draft.workspaceName || 'PaperWriter' };
+    } else if (i === 1) {
+      if (needsPassword() && !draft.password) throw new Error('Choose a host password so you can sign in again from anywhere.');
+      const body = {};
+      if (draft.password) body.hostPassword = draft.password;
+      if (!s.publicUrlFromEnv) body.publicUrl = draft.reach === 'server' ? draft.publicUrl : '';
+      if (draft.reach === 'server' && !s.publicUrlFromEnv && !draft.publicUrl) throw new Error('Enter the address people will use, like https://papers.example.org');
+      const r = await save(body);
+      Object.assign(s, r.settings);
+      if (!net.lanLocked && net.lan !== (draft.reach === 'network')) net = await api('/api/network', { method: 'POST', body: { lan: draft.reach === 'network' } });
+      if (draft.reach === 'internet' && !net.tunnel.running) {
+        if (!net.cloudflared) net = await api('/api/tunnel/install', { method: 'POST' });
+        net = await api('/api/tunnel/start', { method: 'POST' });
+      }
+    } else if (i === 2) {
+      const body = { guestKeys: draft.guestKeys, defaultLinkAI: draft.defaultLinkAI };
+      if (draft.aiKey) body.keys = { [draft.aiProvider]: draft.aiKey };
+      const r = await save(body);
+      Object.assign(s, r.settings);
+    } else if (i === 3) {
+      await save({ allowOnline: draft.allowOnline });
+    }
+  };
+
+  let render = () => {};
+  let shownStep = -1; // the entrance animation plays only when the step changes
+  const installTectonicNow = async () => {
+    installing = true;
+    render();
+    try {
+      await api('/api/tectonic/install', { method: 'POST' });
+      st = await api('/api/status');
+      installing = null;
+    } catch {
+      installing = 'failed';
+    }
+    if (i === 3) render();
+  };
+
+  return new Promise((resolve) => {
+    const finish = async () => {
+      try {
+        await save({ setupDone: true });
+      } catch {}
+      state.me.setupDone = true;
+      el.onclick = el.onchange = el.onsubmit = null;
+      el.innerHTML = '<span class="spinner" aria-label="Loading"></span>';
+      resolve();
+    };
+    render = () => {
+      const last = i === views.length - 1;
+      el.innerHTML = `
+        <div class="setup">
+          <header class="setup-top">
+            <div class="welcome-brand"><img src="/logo.svg" alt="" width="28" height="28" /><span>PaperWriter</span></div>
+            <ol class="setup-steps" aria-label="Setup steps">${steps.map((n, k) => `<li class="${k < i ? 'done' : k === i ? 'current' : ''}" ${k === i ? 'aria-current="step"' : ''}>${n}</li>`).join('')}</ol>
+            ${last ? '' : '<button class="link-btn" type="button" data-skip>Skip setup</button>'}
+          </header>
+          <form class="setup-stage ${shownStep !== i ? 'enter' : ''}" novalidate>${views[i]()}</form>
+          <footer class="setup-foot">
+            ${i > 0 && !last ? '<button class="btn-ghost pill" type="button" data-back>Back</button>' : ''}
+            <span class="spacer"></span>
+            <button class="btn-primary pill lg" type="button" data-next>${last ? 'Start writing' : 'Continue'}${icon('arrow')}</button>
+          </footer>
+        </div>`;
+      hydrateIcons(el);
+      const stepChanged = shownStep !== i;
+      shownStep = i;
+      if (stepChanged) $('.setup-stage input:not([type=radio]):not([type=checkbox]):not([disabled])', el)?.focus();
+      else $(`.setup-stage [name="${document.activeElement?.name || ''}"]:checked`, el)?.focus();
+    };
+    el.onchange = (e) => {
+      if (e.target.name === 'reach') {
+        collect();
+        render();
+      }
+    };
+    el.onsubmit = (e) => {
+      e.preventDefault();
+      $('[data-next]', el)?.click();
+    };
+    el.onclick = async (e) => {
+      const ai = e.target.closest('[data-ai]');
+      if (ai) {
+        collect();
+        draft.aiProvider = ai.dataset.ai;
+        return render();
+      }
+      if (e.target.closest('[data-install]')) return installTectonicNow();
+      if (e.target.closest('[data-skip]')) return finish();
+      if (e.target.closest('[data-back]')) {
+        collect();
+        i--;
+        return render();
+      }
+      const next = e.target.closest('[data-next]');
+      if (!next) return;
+      if (i === views.length - 1) return finish();
+      next.disabled = true;
+      next.innerHTML = `<span class="spinner"></span><span>${i === 1 && draft.reach === 'internet' && !net.tunnel.running ? 'Starting your secure link…' : 'Saving…'}</span>`;
+      try {
+        await apply();
+        i++;
+        render();
+        if (i === 3 && !engines().length && !installing) installTectonicNow();
+      } catch (err) {
+        toast(err.message, 'err', 6000);
+        render();
+      }
+    };
+    render();
+  });
 }
 
 async function askNameOnce() {
@@ -2283,56 +2702,66 @@ async function askNameOnce() {
 
 async function openShare() {
   if (!isOwner()) {
-    const people = state.people.map((p) => `<li>${avatar(p)}<span class="grow"><b>${esc(p.name)}${p.me ? ' (you)' : ''}</b><small>${p.role === 'viewer' ? 'Viewing' : p.role === 'owner' ? 'Owner' : 'Editing'}</small></span></li>`).join('');
+    const people = state.people.map((p) => `<li>${avatar(p)}<span class="grow"><b>${esc(p.name)}${p.me ? ' (you)' : ''}</b><small>${p.role === 'viewer' ? 'Viewing' : p.role === 'owner' ? 'Host' : 'Editing'}</small></span></li>`).join('');
     openModal(`<div class="modal-head">${icon('users')}<h2>People here now</h2><button class="icon-btn" data-close>${icon('x')}</button></div>
-      <div class="modal-body share"><ul class="member-list">${people}</ul><p class="note">Only the owner can create or change share links.</p></div>`);
+      <div class="modal-body share"><ul class="member-list">${people}</ul><p class="note">Only the host can create or change invites.</p></div>`);
     return;
   }
   const pid = state.project;
   let [{ shares }, net] = await Promise.all([api(`/api/projects/${P()}/shares`), api('/api/network')]);
+  const defaultAI = !!state.status?.settings?.defaultLinkAI;
 
   const { el } = openModal(`
     <div class="modal-head">${icon('users')}<h2>Share “${esc(pid)}”</h2><button class="icon-btn" data-close>${icon('x')}</button></div>
     <div class="modal-body share">
-      <h3 class="share-h">Share links</h3>
+      <h3 class="share-h">Invites</h3>
       <ul class="link-list" id="linkList"></ul>
       <form class="invite-row" id="newLink">
-        <select class="input" name="role"><option value="viewer">Can view</option><option value="editor">Can edit</option></select>
-        <label class="toggle" title="Lets them chat with your AI models (your Claude Code subscription or API keys)"><input type="checkbox" name="ai" /><span class="track"></span><span>Can use my AI</span></label>
-        <button class="btn-primary" type="submit">${icon('link')}<span>Create link</span></button>
+        <select class="input" name="role"><option value="editor">Can edit</option><option value="viewer">Can view</option></select>
+        <select class="input" name="expires" title="When the invite stops working"><option value="never">Never expires</option><option value="1d">Expires in 1 day</option><option value="7d">Expires in 7 days</option><option value="30d">Expires in 30 days</option></select>
+        <label class="toggle" title="Lets them chat with your AI models (your subscription or API keys, and their cost)"><input type="checkbox" name="ai" ${defaultAI ? 'checked' : ''} /><span class="track"></span><span>Can use my AI</span></label>
+        <button class="btn-primary" type="submit">${icon('link')}<span>Create invite</span></button>
       </form>
+      <p class="note">Each invite has a link and a short code. People can open the link, or enter the code at <b id="joinAt"></b>.${state.status?.settings?.guestKeys ? ' Anyone you invite can also chat using their own AI key.' : ''}</p>
 
-      <h3 class="share-h">Who can reach this computer</h3>
+      <h3 class="share-h">Where people can join from</h3>
       <div id="reach"></div>
 
       <h3 class="share-h">People here now</h3>
       <ul class="member-list" id="hereNow"></ul>
 
-      <p class="note">Everything stays on this computer: files, AI keys and chats. Links only open this one project.
-      People with an <b>edit</b> link change files that compile here; PaperWriter blocks LaTeX from reading anything outside the project, but only give edit links to people you trust. Revoking a link disconnects them immediately.</p>
+      <p class="note">Files, your AI keys and chats stay with this PaperWriter. An invite only opens this one project.
+      People with an <b>edit</b> invite change files that compile here; PaperWriter blocks LaTeX from reading anything outside the project, but only give edit invites to people you trust. Revoking an invite disconnects them immediately.</p>
     </div>`);
 
-  const base = () => net.tunnel.url || net.addresses[0] || location.origin;
+  const base = () => net.tunnel.url || net.publicUrl || net.addresses[0] || location.origin;
+  const inviteText = (s) => `Join “${pid}” on PaperWriter: ${base()}/j/${s.code}\nOr enter the code ${s.code} at ${base()}`;
+  const expiry = (s) => (!s.expires ? '' : s.expires < Date.now() ? ' · expired' : ` · expires ${new Date(s.expires).toLocaleDateString()}`);
   const renderLinks = () => {
+    $('#joinAt', el).textContent = base().replace(/^https?:\/\//, '');
     $('#linkList', el).innerHTML = shares.length
       ? shares
           .map(
-            (s) => `<li data-token="${esc(s.token)}">
+            (s) => `<li data-token="${esc(s.token)}" class="${s.expires && s.expires < Date.now() ? 'expired' : ''}">
               <span class="access-icon">${icon(s.role === 'editor' ? 'pencil' : 'eye')}</span>
-              <span class="grow"><code class="link-url">${esc(`${base()}/s/${s.token}`)}</code>
-                <small>Created ${new Date(s.created).toLocaleDateString()}${s.ai ? ' · can use your AI' : ''}</small></span>
+              <span class="grow"><button class="invite-code" data-act="code" title="Copy code">${esc(s.code || '')}</button>
+                <small>Created ${new Date(s.created).toLocaleDateString()}${expiry(s)}${s.ai ? ' · can use your AI' : ''}</small></span>
               <select class="input role-select" data-act="role"><option value="viewer" ${s.role === 'viewer' ? 'selected' : ''}>Can view</option><option value="editor" ${s.role === 'editor' ? 'selected' : ''}>Can edit</option></select>
               <label class="toggle" title="Can use my AI"><input type="checkbox" data-act="ai" ${s.ai ? 'checked' : ''} /><span class="track"></span><span>AI</span></label>
-              <button class="btn-ghost small" data-act="copy">${icon('copy')}<span>Copy</span></button>
+              <button class="btn-ghost small" data-act="copy">${icon('copy')}<span>Copy invite</span></button>
               <button class="icon-btn small btn-danger" data-act="revoke" title="Revoke this link">${icon('trash')}</button>
             </li>`,
           )
           .join('')
-      : '<li class="empty">No links yet. Create one below.</li>';
+      : '<li class="empty">No invites yet. Create one below.</li>';
     hydrateIcons(el);
   };
   const renderReach = () => {
-    const local = !net.lan && !net.tunnel.running;
+    const local = !net.lan && !net.tunnel.running && !net.publicUrl;
+    if (net.publicUrl) {
+      $('#reach', el).innerHTML = `<div class="setting-card"><div class="setting-row">${icon('globe')}<span class="label"><b>Online at ${esc(net.publicUrl.replace(/^https?:\/\//, ''))}</b><small>Anyone with an invite can join from anywhere. Change the address in the setup guide.</small></span><span class="badge-pill ok">Live</span></div></div>`;
+      return hydrateIcons(el);
+    }
     $('#reach', el).innerHTML = `
       ${local ? `<p class="warn-line">${icon('lock')}Right now only this computer can open PaperWriter, so links won’t work for anyone else yet.</p>` : ''}
       <div class="setting-card">
@@ -2399,7 +2828,7 @@ async function openShare() {
   };
   const renderHere = () => {
     $('#hereNow', el).innerHTML =
-      state.people.map((p) => `<li>${avatar(p)}<span class="grow"><b>${esc(p.name)}${p.me ? ' (you)' : ''}</b><small>${p.role === 'viewer' ? 'Viewing' : p.role === 'owner' ? 'Owner' : 'Editing'}</small></span></li>`).join('') ||
+      state.people.map((p) => `<li>${avatar(p)}<span class="grow"><b>${esc(p.name)}${p.me ? ' (you)' : ''}</b><small>${p.role === 'viewer' ? 'Viewing' : p.role === 'owner' ? 'Host' : 'Editing'}</small></span></li>`).join('') ||
       '<li class="empty">Just you.</li>';
   };
   renderLinks();
@@ -2410,11 +2839,11 @@ async function openShare() {
     e.preventDefault();
     const fd = new FormData(e.target);
     try {
-      const s = await api(`/api/projects/${P()}/shares`, { method: 'POST', body: { role: fd.get('role'), ai: fd.get('ai') === 'on' } });
+      const s = await api(`/api/projects/${P()}/shares`, { method: 'POST', body: { role: fd.get('role'), ai: fd.get('ai') === 'on', expires: fd.get('expires') } });
       shares.push(s);
       renderLinks();
-      await navigator.clipboard.writeText(`${base()}/s/${s.token}`).catch(() => {});
-      toast('Link created and copied', 'ok');
+      await navigator.clipboard.writeText(inviteText(s)).catch(() => {});
+      toast(`Invite ${s.code} created and copied`, 'ok');
     } catch (err) {
       toast(err.message, 'err');
     }
@@ -2424,14 +2853,18 @@ async function openShare() {
     const act = e.target.closest('[data-act]')?.dataset.act;
     if (!li || !act) return;
     const token = li.dataset.token;
+    const share = shares.find((s) => s.token === token);
     if (act === 'copy') {
-      await navigator.clipboard.writeText(`${base()}/s/${token}`);
-      toast('Link copied', 'ok');
+      await navigator.clipboard.writeText(inviteText(share)).catch(() => {});
+      toast('Invite copied: link and code', 'ok');
+    } else if (act === 'code') {
+      await navigator.clipboard.writeText(share.code).catch(() => {});
+      toast(`Code ${share.code} copied`, 'ok');
     } else if (act === 'revoke') {
       await api(`/api/projects/${P()}/shares/${enc(token)}`, { method: 'DELETE' });
       shares = shares.filter((s) => s.token !== token);
       renderLinks();
-      toast('Link revoked. Anyone using it was disconnected.', 'ok');
+      toast('Invite revoked. Anyone using it was disconnected.', 'ok');
     }
   });
   $('#linkList', el).addEventListener('change', async (e) => {

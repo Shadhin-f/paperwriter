@@ -1,0 +1,44 @@
+# Host PaperWriter on a server.
+#
+#   1. Point a domain at the server (an A record), then copy .env.example to .env and set DOMAIN.
+#   2. docker compose up -d
+#   3. docker compose logs paperwriter   → open the "Finish setup" link it prints.
+#
+# Caddy gets an HTTPS certificate for DOMAIN automatically.
+# Without a domain, run only PaperWriter:  docker compose up -d paperwriter  (then open http://<server-ip>:5178)
+
+services:
+  paperwriter:
+    build: .
+    image: paperwriter
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:-}
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      TRUST_PROXY: "1"
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    volumes:
+      - ./projects:/app/projects
+      - ./data:/app/.data
+    ports:
+      # Only Caddy talks to PaperWriter. Without a domain, set PW_BIND=0.0.0.0 in .env to open port 5178 directly.
+      - "${PW_BIND:-127.0.0.1}:5178:5178"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on: [paperwriter]
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    command: caddy reverse-proxy --from ${DOMAIN:-localhost} --to paperwriter:5178
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy-data:/data
+
+volumes:
+  caddy-data:
