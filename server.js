@@ -6,7 +6,7 @@ import { ROOT, sendJson, readJson, readBody, HttpError } from './lib/util.js';
 import { getSettings, publicSettings, updateSettings, setHostPassword, publicUrl } from './lib/settings.js';
 import * as projects from './lib/projects.js';
 import { compileProject, detectEngines, installTectonic } from './lib/compile.js';
-import { providerStatus, listModels, streamChat, buildMessages, SYSTEM_PROMPT, BYOK_PROVIDERS, PROVIDERS } from './lib/ai.js';
+import { providerStatus, listModels, streamChat, buildMessages, SYSTEM_PROMPT } from './lib/ai.js';
 import * as access from './lib/access.js';
 import { attachCollab, room, flushProject, closeRoom, kickGuests } from './lib/rooms.js';
 import * as network from './lib/network.js';
@@ -130,13 +130,8 @@ route('POST', '/api/join', async (req, { res }) => {
 /* ───────── settings & AI ───────── */
 
 const guestCanUseAI = (who) => [...who.grants.values()].some((g) => g.ai);
-const byokList = () => BYOK_PROVIDERS.map((id) => ({ id, label: PROVIDERS[id].label, sub: PROVIDERS[id].sub }));
 
-/** A collaborator's own key may be used if the host allows it, for the few providers with a fixed public address. */
-function checkOwnKey(who, provider) {
-  if (!BYOK_PROVIDERS.includes(provider)) throw new HttpError(400, 'Your own key works with Claude, ChatGPT, Gemini and OpenRouter.');
-  if (!who.owner && !getSettings().guestKeys) throw new HttpError(403, 'The host has turned off using your own AI keys.');
-}
+
 
 route('GET', '/api/status', async (req, { who }) => {
   if (who.owner) {
@@ -149,7 +144,7 @@ route('GET', '/api/status', async (req, { who }) => {
     for (const [id, p] of Object.entries(await providerStatus())) providers[id] = { id, label: p.label, sub: p.sub, kind: p.kind, available: p.available, detail: p.available ? 'Provided by the owner' : 'Not available' };
   }
   const s = getSettings();
-  return { settings: { engine: s.engine }, engines: {}, providers, guest: true, guestKeys: s.guestKeys, byok: s.guestKeys ? byokList() : [] };
+  return { settings: { engine: s.engine }, engines: {}, providers, guest: true, guestKeys: s.guestKeys };
 });
 
 route('POST', '/api/settings', async (req, { who }) => {
@@ -170,23 +165,14 @@ route('GET', '/api/models', async (req, { who, url }) => {
   return { models: await listModels(url.searchParams.get('provider')) };
 });
 
-/** Models for a collaborator's own key (sent in the body so it never lands in logs or history). */
-route('POST', '/api/models', async (req, { who }) => {
-  const { provider, key, project } = await readJson(req);
-  if (!who.owner) access.requireProject(who, String(project || ''), 'viewer');
-  checkOwnKey(who, provider);
-  if (typeof key !== 'string' || !key.trim()) throw new HttpError(400, 'Paste your API key first.');
-  return { models: await listModels(provider, key.trim()) };
-});
+
 
 /** Streams the model's reply as server-sent events. */
 route('POST', '/api/chat', async (req, { who, res }) => {
   const body = await readJson(req);
-  const ownKey = typeof body.key === 'string' ? body.key.trim() : '';
-  if (ownKey) checkOwnKey(who, body.provider);
   if (!who.owner) {
     const g = access.requireProject(who, String(body.project || ''), 'viewer');
-    if (!g.ai && !ownKey) throw new HttpError(403, 'The host hasn’t shared their AI with your invite. Add your own key to chat.');
+    if (!g.ai) throw new HttpError(403, 'The host hasn’t shared their AI with your invite. Use your own AI from the model menu.');
   }
   const messages = buildMessages(body.messages, body.context);
   const ctrl = new AbortController();
@@ -195,7 +181,7 @@ route('POST', '/api/chat', async (req, { who, res }) => {
   const send = (obj) => !res.writableEnded && res.write(`data: ${JSON.stringify(obj)}\n\n`);
   send({ type: 'start' });
   try {
-    for await (const text of streamChat({ provider: body.provider, model: body.model, system: SYSTEM_PROMPT, messages, signal: ctrl.signal, key: ownKey })) send({ type: 'text', text });
+    for await (const text of streamChat({ provider: body.provider, model: body.model, system: SYSTEM_PROMPT, messages, signal: ctrl.signal })) send({ type: 'text', text });
     send({ type: 'done' });
   } catch (e) {
     if (!ctrl.signal.aborted) send({ type: 'error', error: e.message || String(e) });
@@ -333,6 +319,71 @@ route('GET', '/api/projects/:p/synctex', async (req, { who, params, url }) => {
   return hit ? { found: true, ...hit } : { found: false };
 });
 
+/* ───────── shared AI chat (everyone in the project) ───────── */
+
+const str = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+
+/** Records a finished question and answer so everyone in the project sees it. */
+route('POST', '/api/projects/:p/chat', async (req, { who, params }) => {
+  access.requireProject(who, params.p, 'viewer');
+  const b = await readJson(req);
+  if (!str(b.prompt, 1) || !str(b.reply, 1)) throw new HttpError(400, 'A question and an answer are required.');
+  const color = /^#[0-9a-f]{6}$/i.test(b.by?.color || '') ? b.by.color : '#8e8e93';
+  const entry = {
+    id: str(b.id, 40) || Math.random().toString(36).slice(2),
+    at: Date.now(),
+    by: { name: str(b.by?.name, 40) || (who.owner ? 'Host' : 'Guest'), color, host: !!who.owner },
+    prompt: str(b.prompt, 20000),
+    reply: str(b.reply, 200000),
+    file: str(b.file, 300),
+    sel: str(b.sel, 40),
+    provider: str(b.provider, 60),
+    model: str(b.model, 120),
+    via: ['host', 'own', 'pc'].includes(b.via) ? b.via : 'host',
+  };
+  (await room(params.p)).addChat(entry);
+  return { ok: true };
+});
+
+route('DELETE', '/api/projects/:p/chat', async (req, { who, params }) => {
+  access.requireOwner(who);
+  (await room(params.p)).clearChat();
+  return { ok: true };
+});
+
+/* ───────── version history ───────── */
+
+route('GET', '/api/projects/:p/history', async (req, { who, params }) => {
+  access.requireProject(who, params.p);
+  return { versions: (await room(params.p)).history.list() };
+});
+
+/** A file as it was in a version, plus the version before it (to show what changed). */
+route('GET', '/api/projects/:p/history/:id/file', async (req, { who, params, url }) => {
+  access.requireProject(who, params.p);
+  const r = await room(params.p);
+  const file = url.searchParams.get('path') || '';
+  if (!r.history.get(params.id)) throw new HttpError(404, 'That version no longer exists.');
+  const [text, prev] = await Promise.all([r.history.read(params.id, file), r.history.readPrevious(params.id, file)]);
+  return { text, prev };
+});
+
+/** Save a named version now. */
+route('POST', '/api/projects/:p/history', async (req, { who, params }) => {
+  access.requireProject(who, params.p, 'editor');
+  const { label, name } = await readJson(req);
+  if (!str(label, 1).trim()) throw new HttpError(400, 'Give this version a name.');
+  const r = await room(params.p);
+  await r.flush();
+  return { version: await r.snapshot({ label: str(label, 80).trim(), by: str(name, 40) ? [str(name, 40)] : [] }) };
+});
+
+route('POST', '/api/projects/:p/history/:id/restore', async (req, { who, params }) => {
+  access.requireProject(who, params.p, 'editor');
+  const { path: file, name } = await readJson(req);
+  return (await room(params.p)).restore(params.id, { file: file ? String(file) : null, by: str(name, 40) });
+});
+
 /* ───────── sharing (owner) ───────── */
 
 route('GET', '/api/projects/:p/shares', async (req, { who, params }) => {
@@ -409,6 +460,61 @@ route('POST', '/api/tunnel/install', async (req, { who }) => {
   return { ...networkInfo(), cloudflared: true };
 });
 
+/* ───────── your AI, lent to workspaces you join ─────────
+ * When you join someone else's PaperWriter, your browser can use the AI set up in *your own*
+ * PaperWriter (Claude Code, Ollama, your API keys) through http://localhost on your computer.
+ * Your keys never leave your computer. Requests need the link key from your Settings, and only
+ * come from this computer (the browser you're using).
+ */
+function bridgeHeaders(req) {
+  return {
+    'Access-Control-Allow-Origin': req.headers.origin || '*',
+    'Access-Control-Allow-Headers': 'content-type, x-pw-bridge',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Private-Network': 'true',
+    'Access-Control-Max-Age': '600',
+    Vary: 'Origin',
+  };
+}
+
+async function handleBridge(req, res, url) {
+  const cors = bridgeHeaders(req);
+  for (const [k, v] of Object.entries(cors)) res.setHeader(k, v);
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    return res.end();
+  }
+  const key = getSettings().bridgeKey;
+  const given = String(req.headers['x-pw-bridge'] || '');
+  if (!key) throw new HttpError(403, 'Sharing your AI is turned off in this PaperWriter’s Settings.');
+  if (!access.isLocalRequest(req)) throw new HttpError(403, 'Your AI can only be used from the browser on this computer.');
+  if (!access.safeEqual(given, key)) throw new HttpError(401, 'That link key doesn’t match. Copy it again from your PaperWriter’s Settings.');
+  const sub = url.pathname.slice('/bridge/'.length);
+  if (req.method === 'GET' && sub === 'status') {
+    const providers = {};
+    for (const [id, p] of Object.entries(await providerStatus())) if (p.available) providers[id] = { id, label: p.label, detail: p.detail };
+    return sendJson(res, 200, { name: getSettings().workspaceName || 'PaperWriter', providers });
+  }
+  if (req.method === 'GET' && sub === 'models') return sendJson(res, 200, { models: await listModels(url.searchParams.get('provider')) });
+  if (req.method === 'POST' && sub === 'chat') {
+    const body = await readJson(req);
+    const messages = buildMessages(body.messages, body.context);
+    const ctrl = new AbortController();
+    res.on('close', () => ctrl.abort());
+    res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
+    const send = (obj) => !res.writableEnded && res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    send({ type: 'start' });
+    try {
+      for await (const text of streamChat({ provider: body.provider, model: body.model, system: SYSTEM_PROMPT, messages, signal: ctrl.signal })) send({ type: 'text', text });
+      send({ type: 'done' });
+    } catch (e) {
+      if (!ctrl.signal.aborted) send({ type: 'error', error: e.message || String(e) });
+    }
+    return res.end();
+  }
+  throw new HttpError(404, 'Unknown bridge route');
+}
+
 /* ───────── server ───────── */
 
 const server = http.createServer(async (req, res) => {
@@ -433,6 +539,7 @@ const server = http.createServer(async (req, res) => {
       const cookie = access.ownerLogin(req, m[1]);
       return cookie ? redirect(res, '/', cookie) : redirect(res, '/?link=invalid');
     }
+    if (pathname.startsWith('/bridge/')) return await handleBridge(req, res, url);
     if (!pathname.startsWith('/api/')) {
       if (req.method !== 'GET' && req.method !== 'HEAD') return sendJson(res, 405, { error: 'Method not allowed' });
       return serveStatic(req, res, pathname);

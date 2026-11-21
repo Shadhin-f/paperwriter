@@ -53,7 +53,13 @@ No domain? Add `PW_BIND=0.0.0.0` to `.env` and run `docker compose up -d paperwr
   you can apply or revert, and fixes compile errors on request.
 - **Live co-editing.** Invite people with a link or a short code like `K7QF-3MXA`, and edit together with everyone's cursors and avatars visible.
   Undo only undoes your own changes.
-- **Bring your own AI.** Collaborators can chat with the host's AI, or with their own Claude, ChatGPT, Gemini or OpenRouter key.
+- **Shared AI chat.** Everyone in a project sees everyone's AI conversations as they happen, with who asked. Each person's AI only
+  uses their own messages as context, and **+** starts a fresh conversation without hiding anyone's history.
+- **Version history.** The history button above the editor lists versions saved automatically as people write (a minute after
+  they pause), with who changed which files. See what changed, compare any version with now, name important moments,
+  and restore a whole version or a single file. Restoring saves the current state first, so it can be undone.
+- **Bring your own AI.** Collaborators can chat with the host's AI, or with their own: an API key, or Claude Code, Ollama and
+  their saved keys from their own computer. Their keys never reach the host.
 - **Files stay files.** Projects are plain folders in `projects/`, so you can use git, Dropbox or any other editor alongside PaperWriter.
 - **Folder tree.** Collapsible folders, a filter box, drag-and-drop to move files and folders, and rename, delete or upload on any folder.
   Moving a file doesn't rewrite `\input` or `\includegraphics` paths, so PaperWriter warns you when one still points at the old place.
@@ -80,8 +86,17 @@ Pick a model from the pill at the top of the chat. Use whichever you have:
 Keys you enter in Settings are saved in `.data/settings.json` on your computer and are never sent to a browser.
 
 **Collaborators' AI.** Each invite can let its holder use *your* models (off by default; you pay for their chats). Separately,
-anyone you invite can add their **own** Claude, ChatGPT, Gemini or OpenRouter key from the model menu. Their key is kept in their
-browser and sent only with their own chats; the server never stores it. Turn this off in the setup guide if you'd rather not allow it.
+anyone you invite can use their **own** AI from the model menu, and none of it passes through your server:
+
+- **Their keys** (Claude, ChatGPT, Gemini, OpenRouter): kept in their browser and sent from it straight to the provider.
+- **Their computer** (Claude Code, Ollama, LM Studio, or keys saved there): they run PaperWriter on their own computer, turn on
+  *Settings → Use my AI in workspaces I join*, and paste the link key it shows into *Use AI from your computer* in your workspace.
+  Their browser then talks to their own PaperWriter at `http://localhost`, which only answers that browser, on that computer,
+  with that key. Chrome and Edge ask once to allow access to the local network; Safari doesn't allow it.
+
+Their chats still appear in the shared chat for everyone. Turn own AI off in the setup guide if you'd rather not offer it.
+As with any web app, the page itself comes from the host, so only add keys in workspaces you trust; the link key can be replaced
+at any time from Settings and never reveals the keys behind it.
 
 ## Sharing a project
 
@@ -152,7 +167,9 @@ Optional environment variables (see [`.env.example`](.env.example); a `.env` fil
 | Path | What |
 | --- | --- |
 | `server.js` | HTTP + WebSocket server, routes and access checks |
-| `lib/rooms.js` | Live co-editing: one [Yjs](https://yjs.dev) document per open project, synced over WebSocket and saved to disk |
+| `lib/rooms.js` | Live co-editing: one [Yjs](https://yjs.dev) document per open project, synced over WebSocket and saved to disk, plus the shared AI chat |
+| `lib/history.js` | Version history, stored in each project's hidden `.history/` folder (left out of exports) |
+| `public/ai-client.js`, `public/prompt.js` | Collaborators' own AI: direct provider calls from the browser, and the link to their own PaperWriter |
 | `lib/access.js` | Host detection and sign-in, invites (links and codes), cookies, rate limits |
 | `lib/texguard.js` | Safety check run before compiling projects that have edit links |
 | `lib/compile.js` | Tectonic / latexmk / pdfLaTeX / XeLaTeX / LuaLaTeX, log parsing |

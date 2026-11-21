@@ -1,6 +1,7 @@
 import { markdown, parseReply, locate, lineDiff, esc } from './md.js';
 import * as pdfjs from '/vendor/pdfjs/build/pdf.min.mjs';
 import { VisualEditor } from './visual.js';
+import { DIRECT, directModels, directChat, Bridge } from './ai-client.js';
 
 pdfjs.GlobalWorkerOptions.workerSrc = '/vendor/pdfjs/build/pdf.worker.min.mjs';
 
@@ -51,6 +52,7 @@ const ICONS = {
   link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
   mail: '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 5L2 7"/>',
   eye: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
+  history: '<path d="M3 12a9 9 0 1 0 2.64-6.36L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/>',
   arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
   logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>',
   globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',
@@ -129,10 +131,15 @@ const PROVIDER_ORDER = ['claude-cli', 'anthropic', 'openai', 'gemini', 'ollama',
 const PREFERRED_MODEL = { 'claude-cli': 'sonnet', anthropic: 'claude-sonnet-5-5', openai: 'gpt-5', gemini: 'gemini-2.5-pro', 'gemini-cli': 'default', 'codex-cli': 'default' };
 const P = () => enc(state.project);
 
-/* A collaborator's own API keys live only in this browser and go with each request; the server never stores them. */
+/*
+ * A collaborator's own AI never goes through the host:
+ *   own:<provider>  their API key, kept in this browser and sent straight to the provider
+ *   pc:<provider>   the AI in their own PaperWriter on their computer (Claude Code, Ollama, saved keys)
+ */
 const OWN = 'own:';
-const isOwn = (id) => String(id || '').startsWith(OWN);
-const ownId = (id) => String(id || '').slice(OWN.length);
+const PC = 'pc:';
+const viaOf = (id) => (String(id || '').startsWith(OWN) ? 'own' : String(id || '').startsWith(PC) ? 'pc' : 'host');
+const baseId = (id) => String(id || '').replace(/^(own|pc):/, '');
 function ownKeys() {
   try {
     return JSON.parse(localStorage.getItem('pw.ownKeys') || '{}');
@@ -148,7 +155,21 @@ function setOwnKey(id, key) {
     localStorage.setItem('pw.ownKeys', JSON.stringify(k));
   } catch {}
 }
-const byok = () => state.status?.byok || [];
+/** Guests may bring their own AI unless the host turned that off. */
+const ownAllowed = () => !isOwner() && !!state.status?.guestKeys;
+function bridgeConf() {
+  try {
+    return JSON.parse(localStorage.getItem('pw.bridge') || 'null');
+  } catch {
+    return null;
+  }
+}
+function saveBridgeConf(conf) {
+  try {
+    if (conf) localStorage.setItem('pw.bridge', JSON.stringify(conf));
+    else localStorage.removeItem('pw.bridge');
+  } catch {}
+}
 
 /* ───────────────────────── api helpers ───────────────────────── */
 
@@ -526,8 +547,10 @@ async function loadProject(name) {
   });
   ws.meta.observe(() => state.ws === ws && refreshFiles());
   ws.folders.observe(() => state.ws === ws && refreshFiles());
+  ws.chat.observe(() => state.ws === ws && renderChat());
   await ws.connect();
   if (state.ws !== ws) return;
+  renderChat();
   renderSyncStatus();
   refreshFiles();
   const last = prefs.lastFiles[name];
@@ -1403,11 +1426,17 @@ async function refreshStatus() {
 }
 
 function providerInfo(id) {
-  if (isOwn(id)) {
-    const b = byok().find((x) => x.id === ownId(id));
-    if (!b) return null;
-    const has = !!ownKeys()[b.id];
-    return { id, label: b.label, available: has, own: true, detail: has ? 'Your key · stays in this browser' : `Add your ${b.label} key to use it` };
+  const via = viaOf(id);
+  const base = baseId(id);
+  if (via === 'own') {
+    const d = DIRECT[base];
+    if (!d || !ownAllowed()) return null;
+    const has = !!ownKeys()[base];
+    return { id, label: d.label, available: has, own: true, detail: has ? `Your key · sent from this browser straight to ${d.label}` : `Add your ${d.label} key to use it` };
+  }
+  if (via === 'pc') {
+    const p = state.bridgeStatus?.providers?.[base];
+    return p && ownAllowed() ? { id, label: p.label, available: true, pc: true, detail: `On your computer · ${p.detail || ''}` } : null;
   }
   return state.status?.providers?.[id];
 }
@@ -1416,13 +1445,14 @@ async function ensureModelChoice() {
   const provs = state.status?.providers || {};
   if (prefs.provider && providerInfo(prefs.provider) && prefs.model) return;
   let pick = PROVIDER_ORDER.find((p) => provs[p]?.available);
-  if (!pick && byok().length) {
+  if (!pick && state.bridgeStatus) pick = PROVIDER_ORDER.map((p) => PC + p).find((p) => providerInfo(p));
+  if (!pick && ownAllowed()) {
     const keys = ownKeys();
-    pick = OWN + (byok().find((b) => keys[b.id]) || byok()[0]).id;
+    pick = OWN + (Object.keys(DIRECT).find((p) => keys[p]) || 'anthropic');
   }
   pick ||= 'claude-cli';
   prefs.provider = pick;
-  prefs.model = PREFERRED_MODEL[isOwn(pick) ? ownId(pick) : pick] || null;
+  prefs.model = PREFERRED_MODEL[baseId(pick)] || null;
   if (!prefs.model) {
     try {
       const models = await getModels(pick);
@@ -1436,10 +1466,14 @@ async function ensureModelChoice() {
 async function getModels(provider, force = false) {
   if (!force && state.modelCache[provider]) return state.modelCache[provider];
   let models;
-  if (isOwn(provider)) {
-    const key = ownKeys()[ownId(provider)];
+  const via = viaOf(provider);
+  if (via === 'own') {
+    const key = ownKeys()[baseId(provider)];
     if (!key) throw new Error('Add your key above to see its models.');
-    ({ models } = await api('/api/models', { method: 'POST', body: { provider: ownId(provider), key, project: state.project } }));
+    models = await directModels(baseId(provider), key);
+  } else if (via === 'pc') {
+    if (!state.bridge) throw new Error('Connect your computer first.');
+    models = await state.bridge.models(baseId(provider));
   } else ({ models } = await api(`/api/models?provider=${enc(provider)}`));
   state.modelCache[provider] = models;
   return models;
@@ -1461,17 +1495,21 @@ function openModelPicker(selected = prefs.provider) {
     [hostTitle('Logged-in CLI'), ['claude-cli', 'gemini-cli', 'codex-cli']],
     [hostTitle('Cloud API'), ['anthropic', 'openai', 'gemini', 'openrouter']],
     [hostTitle('Local machine'), ['ollama', 'compat']],
-    ...(!isOwner() && byok().length ? [['Your own key', byok().map((b) => OWN + b.id)]] : []),
+    ...(ownAllowed() && state.bridgeStatus ? [['Your computer', Object.keys(state.bridgeStatus.providers || {}).map((p) => PC + p)]] : []),
+    ...(ownAllowed() ? [['Your keys · straight from this browser', Object.keys(DIRECT).map((p) => OWN + p)]] : []),
   ];
   const shown = (id) => {
     const p = providerInfo(id);
     if (!p) return false;
-    if (p.own) return true;
+    if (p.own || p.pc) return true;
     if (!isOwner()) return p.available && state.ai;
     return p.available || !id.endsWith('-cli') || id === 'claude-cli';
   };
   const info = providerInfo(selected);
-  const action = !info ? '' : info.own ? ` · <a data-own-key="${esc(ownId(selected))}">${info.available ? 'Change key' : 'Add key'}</a>` : !info.available && isOwner() ? ` · <a data-open-settings>Set up</a>` : '';
+  const action = !info ? '' : info.own ? ` · <a data-own-key="${esc(baseId(selected))}">${info.available ? 'Change key' : 'Add key'}</a>` : !info.available && isOwner() ? ` · <a data-open-settings>Set up</a>` : '';
+  const pcRow = ownAllowed()
+    ? `<button class="pop-item pc-row" data-connect-pc>${icon('terminal')}<span class="grow"><span>${state.bridgeStatus ? 'Your computer is connected' : 'Use AI from your computer'}</span><span class="sub">Claude Code, Ollama or your saved keys, via your own PaperWriter</span></span></button>`
+    : '';
   const html = `
     ${groups
       .map(([title, ids]) => [title, ids.filter(shown)])
@@ -1486,6 +1524,7 @@ function openModelPicker(selected = prefs.provider) {
           .join('')}</div>`,
       )
       .join('')}
+    ${pcRow}
     <div class="pop-sep"></div>
     <div class="prov-detail">${esc(info?.detail || 'Pick where your co-author runs.')}${action}</div>
     <div class="pop-title">Model</div>
@@ -1503,6 +1542,10 @@ function openModelPicker(selected = prefs.provider) {
     if (own) {
       closePopover();
       return askOwnKey(own.dataset.ownKey).then((ok) => ok && openModelPicker(OWN + own.dataset.ownKey));
+    }
+    if (e.target.closest('[data-connect-pc]')) {
+      closePopover();
+      return openBridgeDialog();
     }
     const m = e.target.closest('[data-model]');
     if (m) chooseModel(selected, m.dataset.model);
@@ -1536,13 +1579,12 @@ function openModelPicker(selected = prefs.provider) {
 
 /** Asks a collaborator for their own API key. It's saved in this browser only. */
 async function askOwnKey(id) {
-  const b = byok().find((x) => x.id === id);
-  const links = { anthropic: 'console.anthropic.com', openai: 'platform.openai.com/api-keys', gemini: 'aistudio.google.com/apikey', openrouter: 'openrouter.ai/keys' };
-  const key = await askText(`Your ${b?.label || id} key`, {
+  const d = DIRECT[id];
+  const key = await askText(`Your ${d?.label || id} key`, {
     type: 'password',
-    placeholder: 'Paste your API key',
+    placeholder: d?.placeholder || 'Paste your API key',
     okLabel: 'Save key',
-    note: `Get one at ${links[id] || 'your provider'}. It stays in this browser and is sent only with your own chats, never saved by the host.${ownKeys()[id] ? ' Leave empty and save to remove it.' : ''}`,
+    note: `Get one at <a href="${d?.keyUrl}" target="_blank" rel="noopener">${(d?.keyUrl || '').replace(/^https:\/\//, '')}</a>. It’s saved in this browser and sent straight to ${esc(d?.label || id)} with your own chats. The host’s server never sees it.${ownKeys()[id] ? ' Leave empty and save to remove it.' : ''}`,
   });
   if (key === null) return false;
   setOwnKey(id, key);
@@ -1551,6 +1593,81 @@ async function askOwnKey(id) {
   renderChatAccess();
   toast(key ? 'Key saved in this browser' : 'Key removed', 'ok');
   return true;
+}
+
+/** Connects to the person's own PaperWriter on this computer, to use its AI here. */
+async function connectBridge(conf, quiet = false) {
+  const bridge = new Bridge(conf);
+  try {
+    state.bridgeStatus = await bridge.status();
+    state.bridge = bridge;
+    for (const k of Object.keys(state.modelCache)) if (k.startsWith(PC)) delete state.modelCache[k];
+    return true;
+  } catch (e) {
+    state.bridge = null;
+    state.bridgeStatus = null;
+    if (!quiet) throw e;
+    return false;
+  } finally {
+    renderModelPill();
+    renderChatAccess();
+  }
+}
+
+function openBridgeDialog() {
+  const conf = bridgeConf() || { url: 'http://localhost:5178', key: '' };
+  const provs = Object.values(state.bridgeStatus?.providers || {});
+  const { el, close } = openModal(`
+    <div class="modal-head">${icon('terminal')}<h2>Use AI from your computer</h2><button class="icon-btn" data-close>${icon('x')}</button></div>
+    <form class="modal-body" id="bridgeForm">
+      ${state.bridgeStatus ? `<div class="status-line ok">${icon('check')}<span>Connected. Available here: ${provs.map((p) => esc(p.label)).join(', ') || 'no AI set up yet'}.</span></div>` : ''}
+      <ol class="steps">
+        <li>Run PaperWriter on your own computer (free, from <a href="https://github.com/Shadhin-f/paperwriter" target="_blank" rel="noopener">github.com/Shadhin-f/paperwriter</a>) and set up Claude Code, Ollama or your API keys there.</li>
+        <li>In that PaperWriter, open <b>Settings</b>, turn on <b>Use my AI in workspaces I join</b> and copy its link key.</li>
+        <li>Paste it below.</li>
+      </ol>
+      <label class="field"><span>Link key</span><input class="input mono" type="password" name="key" value="${esc(conf.key)}" placeholder="Paste the link key" autocomplete="off" /></label>
+      <label class="field"><span>Address of your PaperWriter</span><input class="input mono" name="url" value="${esc(conf.url)}" placeholder="http://localhost:5178" /></label>
+      <p class="note">Your keys and logins stay on your computer, and the chats run there. The host of this workspace never sees them. Your browser may ask to let this page reach devices on your local network: allow it.</p>
+    </form>
+    <div class="modal-foot">${bridgeConf() ? '<button class="btn-ghost" data-disconnect>Disconnect</button><span class="spacer"></span>' : ''}<button class="btn-ghost" data-close>Cancel</button><button class="btn-primary" data-connect>${icon('link')}<span>Connect</span></button></div>`);
+  const form = $('#bridgeForm', el);
+  const go = async () => {
+    const next = { url: form.url.value.trim() || 'http://localhost:5178', key: form.key.value.trim() };
+    if (!next.key) return toast('Paste the link key from your PaperWriter’s Settings.', 'err');
+    const btn = $('[data-connect]', el);
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span><span>Connecting…</span>';
+    try {
+      await connectBridge(next);
+      saveBridgeConf(next);
+      close();
+      const names = Object.values(state.bridgeStatus.providers).map((p) => p.label);
+      toast(names.length ? `Connected: ${names.join(', ')}` : 'Connected, but no AI is set up on your computer yet', names.length ? 'ok' : 'err', 5000);
+      if (names.length) openModelPicker(PC + Object.keys(state.bridgeStatus.providers)[0]);
+    } catch (e) {
+      toast(e.message, 'err', 7000);
+      btn.disabled = false;
+      btn.innerHTML = `${icon('link')}<span>Connect</span>`;
+      hydrateIcons(btn);
+    }
+  };
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    go();
+  };
+  $('[data-connect]', el).onclick = go;
+  $('[data-disconnect]', el)?.addEventListener('click', () => {
+    saveBridgeConf(null);
+    state.bridge = null;
+    state.bridgeStatus = null;
+    if (viaOf(prefs.provider) === 'pc') prefs.provider = prefs.model = null;
+    savePrefs();
+    ensureModelChoice();
+    renderChatAccess();
+    close();
+    toast('Disconnected from your computer', 'ok');
+  });
 }
 
 function chooseModel(provider, model) {
@@ -1602,6 +1719,16 @@ function openSettings(focus) {
           <div class="setting-row"><span class="label"><b>OpenAI-compatible server</b><small>LM Studio, llama.cpp, vLLM, OpenRouter… · ${esc(prov.compat.detail)}</small></span>${badge(prov.compat.available, 'Reachable', 'Offline')}</div>
           <div class="key-row"><input class="input" data-field="compatUrl" value="${esc(s.compatUrl)}" placeholder="http://127.0.0.1:1234/v1" /></div>
           <div class="key-row"><input class="input" type="password" data-key="compat" placeholder="${s.keyStatus.compat.set ? 'Key set — paste to replace' : 'API key (optional)'}" autocomplete="off" /></div>
+        </div>
+        <div class="setting-card">
+          <div class="setting-row"><span class="label"><b>Use my AI in workspaces I join</b><small>When you join someone else’s PaperWriter, your browser can use this computer’s AI: Claude Code, Ollama and your keys. They stay here; the other host never sees them.</small></span>
+            <label class="toggle"><input type="checkbox" id="bridgeToggle" ${s.bridgeKey ? 'checked' : ''} /><span class="track"></span></label></div>
+          ${
+            s.bridgeKey
+              ? `<div class="key-row"><input class="input" readonly value="${esc(s.bridgeKey)}" id="bridgeKeyField" aria-label="Link key" /><button class="btn-ghost" type="button" data-bridge="copy">${icon('copy')}Copy</button><button class="btn-ghost" type="button" data-bridge="rotate">New key</button></div>
+                 <p class="note">In the other workspace: model menu → <b>Use AI from your computer</b>, then paste this key. Keep PaperWriter running here while you work. A new key disconnects browsers using the old one.</p>`
+              : ''
+          }
         </div>
         ${prov['gemini-cli'].available ? cliCard('gemini-cli', '') : ''}
         ${prov['codex-cli'].available ? cliCard('codex-cli', '') : ''}
@@ -1661,6 +1788,25 @@ function openSettings(focus) {
     savePrefs();
   };
   $('#installTectonicBtn', el)?.addEventListener('click', (e) => installTectonic(e.currentTarget));
+  $('#bridgeToggle', el).onchange = async (e) => {
+    await api('/api/settings', { method: 'POST', body: { bridge: e.target.checked } }).catch((err) => toast(err.message, 'err'));
+    await refreshStatus();
+    close();
+    openSettings('ai');
+  };
+  el.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-bridge]');
+    if (!b) return;
+    if (b.dataset.bridge === 'copy') {
+      await navigator.clipboard.writeText($('#bridgeKeyField', el).value).catch(() => {});
+      return toast('Link key copied', 'ok');
+    }
+    await api('/api/settings', { method: 'POST', body: { bridgeRotate: true } });
+    await refreshStatus();
+    close();
+    openSettings('ai');
+    toast('New link key made. Paste it in the workspaces you use.', 'ok');
+  });
   el.addEventListener('click', async (e) => {
     const c = e.target.closest('[data-clear]');
     if (!c) return;
@@ -1747,41 +1893,98 @@ const SUGGESTIONS = [
   ['🔍', 'Proofread and polish the selected text'],
 ];
 
+/**
+ * Everyone's AI chats in this project, oldest first. Your own exchanges use your local copies
+ * (they remember which edits you applied); everyone else's are shown as they were shared.
+ */
+function chatTimeline() {
+  const groups = [];
+  const used = new Set();
+  const mine = new Map(state.chat.map((m, i) => [m.id, i]));
+  for (const e of state.ws?.chat?.toArray() || []) {
+    if (mine.has(e.id)) {
+      const i = mine.get(e.id);
+      const u = state.chat[i - 1]?.role === 'user' ? state.chat[i - 1] : null;
+      groups.push({ at: e.at, msgs: u ? [u, state.chat[i]] : [state.chat[i]] });
+      if (u) used.add(u.id);
+      used.add(e.id);
+      continue;
+    }
+    const by = e.by || { name: 'Someone', color: '#8e8e93' };
+    groups.push({
+      at: e.at,
+      msgs: [
+        { id: `${e.id}-q`, role: 'user', content: e.prompt, file: e.file, sel: e.sel, by, other: true },
+        { id: e.id, role: 'assistant', content: e.reply, providerLabel: e.provider, model: e.model, file: e.file, by, via: e.via, other: true },
+      ],
+    });
+  }
+  // Your messages that aren't shared (yet): the one being written, failed ones, and older local history.
+  let pending = null;
+  for (const m of state.chat) {
+    if (used.has(m.id)) continue;
+    if (m.role === 'user' || !pending) groups.push((pending = { at: m.at || 0, msgs: [] }));
+    pending.msgs.push(m);
+    if (m.role === 'assistant') pending = null;
+  }
+  groups.sort((a, b) => a.at - b.at);
+  const since = prefs.chatFrom?.[state.project] || 0;
+  const out = [];
+  let divided = !since;
+  for (const g of groups) {
+    if (!divided && g.at >= since) {
+      if (out.length) out.push({ id: 'divider', role: 'divider' });
+      divided = true;
+    }
+    out.push(...g.msgs);
+  }
+  state.timeline = out;
+  return out;
+}
+
+const findMsg = (id) => state.chat.find((m) => m.id === id) || state.timeline?.find((m) => m.id === id);
+
 function renderChat() {
   const box = $('#messages');
-  if (!state.chat.length) {
+  const items = chatTimeline();
+  if (!items.length) {
     box.innerHTML = `<div class="chat-empty">
       <img src="/logo.svg" alt="" class="bob" />
       <h3>Hi! I'm your LaTeX buddy</h3>
-      <p>Ask me to write, restructure or fix anything in your paper.</p>
+      <p>Ask me to write, restructure or fix anything in your paper. Everyone in this project sees these chats.</p>
       <div class="suggestions">${SUGGESTIONS.map(([e, t]) => `<button class="suggestion" data-suggest="${esc(t)}"><span class="emo">${e}</span>${esc(t)}</button>`).join('')}</div>
     </div>`;
     return;
   }
   box.innerHTML = '';
-  for (const m of state.chat) box.append(messageEl(m));
+  for (const m of items) box.append(messageEl(m));
   hydrateIcons(box);
   box.scrollTop = box.scrollHeight;
 }
 
 function messageEl(m) {
   const el = document.createElement('div');
-  el.className = `msg ${m.role}`;
+  el.className = `msg ${m.role}${m.other ? ' other' : ''}`;
   el.dataset.id = m.id;
   fillMessage(el, m);
   return el;
 }
 
 function fillMessage(el, m) {
-  if (m.role === 'user') {
-    el.innerHTML = `<div class="bubble">${esc(m.content)}</div>${m.sel || m.file ? `<div class="msg-meta">${m.file ? `<span>${esc(m.file)}</span>` : ''}${m.sel ? `<span class="ctx">${esc(m.sel)}</span>` : ''}</div>` : ''}`;
+  if (m.role === 'divider') {
+    el.innerHTML = '<span>New conversation · the AI only sees your messages below</span>';
     return;
   }
-  const info = providerInfo(m.provider);
+  if (m.role === 'user') {
+    el.innerHTML = `${m.other ? `<div class="msg-author">${avatar(m.by, 'tiny')}<span>${esc(m.by.name)}</span>${m.by.host ? '<span class="host-tag">Host</span>' : ''}</div>` : ''}<div class="bubble">${esc(m.content)}</div>${m.sel || m.file ? `<div class="msg-meta">${m.file ? `<span>${esc(m.file)}</span>` : ''}${m.sel ? `<span class="ctx">${esc(m.sel)}</span>` : ''}</div>` : ''}`;
+    return;
+  }
+  const info = m.other ? null : providerInfo(m.provider);
+  const where = m.via === 'pc' ? ` · on ${esc(m.by?.name || 'their')}’s computer` : '';
   el.innerHTML = `
-    <div class="msg-meta"><img src="/logo.svg" alt="" />${esc(info?.label || m.provider || '')} · ${esc(m.model || '')}</div>
+    <div class="msg-meta"><img src="/logo.svg" alt="" />${esc(m.providerLabel || info?.label || baseId(m.provider) || '')} · ${esc(m.model || '')}${where}</div>
     <div class="bubble">${assistantBody(m)}</div>
-    ${m.streaming ? '' : `<div class="msg-actions">
+    ${m.streaming ? '' : m.other ? `<div class="msg-actions"><button data-act="copy-msg" data-msg="${m.id}">Copy</button></div>` : `<div class="msg-actions">
       <button data-act="copy-msg" data-msg="${m.id}">${'Copy'}</button>
       ${(m.edits || []).includes('applied') ? `<button data-act="revert-all" data-msg="${m.id}">Revert all</button>` : ''}
       <button data-act="retry-msg" data-msg="${m.id}">Retry</button></div>`}`;
@@ -1809,12 +2012,12 @@ function assistantBody(m) {
 }
 
 function editCard(m, s, i) {
-  const st = !s.complete ? 'writing' : m.edits?.[i] || 'ready';
+  const st = !s.complete ? 'writing' : m.other ? 'shared' : m.edits?.[i] || 'ready';
   const label = { applied: 'Applied', failed: 'Not found', reverted: 'Reverted', writing: 'writing…' }[st] || '';
   const btn =
     st === 'applied' ? `<button data-act="revert" data-msg="${m.id}" data-i="${i}">Revert</button>`
     : st === 'failed' ? `<button data-act="apply" data-msg="${m.id}" data-i="${i}">Retry</button>`
-    : st === 'writing' ? ''
+    : st === 'writing' || st === 'shared' ? ''
     : `<button data-act="apply" data-msg="${m.id}" data-i="${i}">Apply</button>`;
   const diff = lineDiff(s.search, s.replace)
     .map((o) => `<div class="${o.k}">${esc(o.t) || ' '}</div>`)
@@ -1827,7 +2030,7 @@ function codeCard(m, s, i) {
   const full = tex && isFullDoc(s.code);
   const st = m.code?.[i];
   const btns = [`<button data-act="copy" data-msg="${m.id}" data-i="${i}">Copy</button>`];
-  if (tex && s.complete) {
+  if (tex && s.complete && !m.other) {
     if (full) btns.push(st === 'replaced' ? `<button data-act="undo-replace" data-msg="${m.id}" data-i="${i}">Revert</button>` : `<button data-act="replace-file" data-msg="${m.id}" data-i="${i}">Replace file</button>`);
     else btns.push(`<button data-act="insert" data-msg="${m.id}" data-i="${i}">Insert</button>`);
   }
@@ -1866,12 +2069,19 @@ async function send(text) {
   text = (text || '').trim();
   if (!text || state.streaming) return;
   if (!prefs.provider || !prefs.model) return openModelPicker();
-  const ownKey = isOwn(prefs.provider) ? ownKeys()[ownId(prefs.provider)] : '';
-  if (isOwn(prefs.provider) && !ownKey) return askOwnKey(ownId(prefs.provider));
+  const via = viaOf(prefs.provider);
+  const base = baseId(prefs.provider);
+  const ownKey = via === 'own' ? ownKeys()[base] : '';
+  if (via === 'own' && !ownKey) return askOwnKey(base);
+  if (via === 'pc' && !state.bridge) return openBridgeDialog();
+  const project = state.project;
   const sel = state.useSelection ? selectionInfo() : null;
-  const userMsg = { id: uid(), role: 'user', content: text, file: state.file, sel: sel ? `L${sel.fromLine}${sel.toLine !== sel.fromLine ? `–${sel.toLine}` : ''}` : null };
-  const msg = { id: uid(), role: 'assistant', content: '', provider: prefs.provider, model: prefs.model, file: state.file, edits: [], code: [], streaming: true };
-  const history = [...state.chat, userMsg].map((m) => ({ role: m.role, content: m.content }));
+  const now = Date.now();
+  const userMsg = { id: uid(), at: now, role: 'user', content: text, file: state.file, sel: sel ? `L${sel.fromLine}${sel.toLine !== sel.fromLine ? `–${sel.toLine}` : ''}` : null };
+  const msg = { id: uid() + uid(), at: now, role: 'assistant', content: '', provider: prefs.provider, model: prefs.model, file: state.file, edits: [], code: [], streaming: true };
+  // The AI sees only your own conversation (since your last "New chat"), even though everyone sees every chat.
+  const since = prefs.chatFrom?.[project] || 0;
+  const history = [...state.chat.filter((m) => (m.at || 0) >= since && !m.error), userMsg].map((m) => ({ role: m.role, content: m.content }));
   state.chat.push(userMsg, msg);
   renderChat();
   $('#prompt').value = '';
@@ -1890,18 +2100,14 @@ async function send(text) {
   state.streaming = { ctrl, msg };
   setSendMode(true);
   try {
-    const res = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ project: state.project, provider: isOwn(msg.provider) ? ownId(msg.provider) : msg.provider, key: ownKey || undefined, model: msg.model, messages: history, context }),
-      signal: ctrl.signal,
-    });
-    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
-    for await (const ev of sseEvents(res.body)) {
-      if (ev.type === 'text') {
-        msg.content += ev.text;
-        queueRender(msg);
-      } else if (ev.type === 'error') msg.error = ev.error;
+    const args = { model: msg.model, history, context, signal: ctrl.signal };
+    const chunks =
+      via === 'own' ? directChat({ ...args, provider: base, key: ownKey })
+      : via === 'pc' ? state.bridge.chat({ ...args, provider: base })
+      : hostChat({ ...args, provider: msg.provider, project });
+    for await (const t of chunks) {
+      msg.content += t;
+      queueRender(msg);
     }
   } catch (e) {
     if (e.name === 'AbortError') msg.stopped = true;
@@ -1911,9 +2117,35 @@ async function send(text) {
     state.streaming = null;
     setSendMode(false);
   }
+  if (!msg.error && !msg.stopped && msg.content.trim() && state.project === project) shareExchange(project, userMsg, msg);
   if (!msg.error && !msg.stopped && prefs.autoApply) await autoApply(msg);
   queueRender(msg);
   saveChat();
+}
+
+/** The host's AI, through the host's server. */
+async function* hostChat({ provider, model, history, context, signal, project }) {
+  const res = await fetch('/api/chat', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ project, provider, model, messages: history, context }),
+    signal,
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
+  for await (const ev of sseEvents(res.body)) {
+    if (ev.type === 'text') yield ev.text;
+    else if (ev.type === 'error') throw new Error(ev.error);
+  }
+}
+
+/** Adds a finished question and answer to the project's shared chat, so everyone sees it. */
+function shareExchange(project, u, m) {
+  const me = myIdentity();
+  const info = providerInfo(m.provider);
+  api(`/api/projects/${enc(project)}/chat`, {
+    method: 'POST',
+    body: { id: m.id, prompt: u.content, reply: m.content, file: u.file || '', sel: u.sel || '', provider: info?.label || baseId(m.provider), model: m.model || '', via: viaOf(m.provider), by: { name: me.name, color: me.color } },
+  }).catch((e) => toast(`Couldn’t share this chat with the others: ${e.message}`, 'err'));
 }
 
 async function autoApply(msg) {
@@ -1998,8 +2230,9 @@ $('#messages').addEventListener('click', async (e) => {
   if (sug) return send(sug.dataset.suggest);
   const b = e.target.closest('[data-act]');
   if (!b) return;
-  const msg = state.chat.find((m) => m.id === b.dataset.msg);
+  const msg = findMsg(b.dataset.msg);
   if (!msg) return;
+  if (msg.other && !['copy', 'copy-msg'].includes(b.dataset.act)) return;
   const i = Number(b.dataset.i);
   const act = b.dataset.act;
   if (act === 'apply') await applyEdits(msg, [i]);
@@ -2065,10 +2298,24 @@ function wire() {
   $('#sendBtn').onclick = () => (state.streaming ? state.streaming.ctrl.abort() : send($('#prompt').value));
   $('#newChatBtn').onclick = () => {
     if (state.streaming) state.streaming.ctrl.abort();
-    state.chat = [];
-    saveChat();
+    prefs.chatFrom = { ...(prefs.chatFrom || {}), [state.project]: Date.now() };
+    savePrefs();
     renderChat();
+    toast('New conversation. Earlier chats stay visible to everyone.', 'ok');
   };
+  $('#clearChatBtn').onclick = async () => {
+    if (!(await confirmBox('Clear the chat for everyone?', 'Every AI conversation in this project is removed for all collaborators. This can’t be undone.', 'Clear chat'))) return;
+    try {
+      await api(`/api/projects/${P()}/chat`, { method: 'DELETE' });
+      state.chat = [];
+      saveChat();
+      renderChat();
+      toast('Chat cleared for everyone', 'ok');
+    } catch (e) {
+      toast(e.message, 'err');
+    }
+  };
+  $('#historyBtn').onclick = () => openHistory().catch((e) => toast(e.message, 'err'));
   $('#autoApply').checked = prefs.autoApply;
   $('#autoApply').onchange = (e) => {
     prefs.autoApply = e.target.checked;
@@ -2212,6 +2459,8 @@ async function boot() {
   renderAccount();
   try {
     await refreshStatus();
+    const conf = ownAllowed() && bridgeConf();
+    if (conf) await Promise.race([connectBridge(conf, true), sleep(2500)]);
     await ensureModelChoice();
     const wanted = params.get('project');
     if (wanted) history.replaceState(null, '', location.pathname);
@@ -2300,7 +2549,7 @@ function openAccountMenu() {
      <div class="pop-sep"></div>
      <button class="pop-item" data-rename>${icon('pencil')}<span class="grow">Change your name</span></button>
      ${isOwner() ? `<button class="pop-item" data-setup>${icon('settings')}<span class="grow">Open the setup guide</span></button>` : `<button class="pop-item" data-join>${icon('link')}<span class="grow">Join with an invite code</span></button>`}
-     ${!isOwner() && byok().length ? `<button class="pop-item" data-keys>${icon('sparkle')}<span class="grow">Your AI keys</span></button>` : ''}
+     ${ownAllowed() ? `<button class="pop-item" data-keys>${icon('sparkle')}<span class="grow">Your own AI</span></button>` : ''}
      ${isOwner() && state.me.local ? '' : `<div class="pop-sep"></div><button class="pop-item btn-danger" data-signout>${icon('logout')}<span class="grow">${isOwner() ? 'Sign out' : 'Leave this workspace'}</span></button>`}`,
   );
   const r = $('#accountBtn').getBoundingClientRect();
@@ -2325,7 +2574,7 @@ function openAccountMenu() {
     }
     if (e.target.closest('[data-keys]')) {
       closePopover();
-      return openModelPicker(isOwn(prefs.provider) ? prefs.provider : OWN + byok()[0].id);
+      return openModelPicker(viaOf(prefs.provider) !== 'host' ? prefs.provider : OWN + 'anthropic');
     }
     if (e.target.closest('[data-signout]')) {
       closePopover();
@@ -2359,10 +2608,11 @@ function renderSyncStatus() {
 
 /** Guests only get AI when the owner switched it on for their link. */
 function renderChatAccess() {
-  const locked = !isOwner() && !state.ai && !byok().length;
+  const locked = !isOwner() && !state.ai && !ownAllowed();
   $('#composer').classList.toggle('locked', locked);
   $('#prompt').disabled = locked;
   $('#prompt').placeholder = locked ? 'The host hasn’t shared AI with your invite.' : 'Ask your co-author to write or edit…';
+  $('#clearChatBtn').hidden = !isOwner();
   $('#modelBtn').disabled = locked;
 }
 
@@ -2536,7 +2786,7 @@ async function runSetup() {
         <small>Saved only on this server, never sent to anyone’s browser.</small>
       </div>
       <div class="setting-card">
-        <div class="setting-row"><span class="label"><b>Collaborators can use their own AI keys</b><small>Their key stays in their browser and pays for their own chats.</small></span><label class="toggle"><input type="checkbox" name="guestKeys" ${draft.guestKeys ? 'checked' : ''} /><span class="track"></span></label></div>
+        <div class="setting-row"><span class="label"><b>Collaborators can use their own AI</b><small>Their keys, Claude Code or local models stay on their own computer and pay for their own chats.</small></span><label class="toggle"><input type="checkbox" name="guestKeys" ${draft.guestKeys ? 'checked' : ''} /><span class="track"></span></label></div>
         <div class="setting-row"><span class="label"><b>New invites can use my AI</b><small>Their chats then use your keys or subscription, and its cost. You can change it per invite.</small></span><label class="toggle"><input type="checkbox" name="defaultLinkAI" ${draft.defaultLinkAI ? 'checked' : ''} /><span class="track"></span></label></div>
       </div>`;
     },
@@ -2883,3 +3133,164 @@ async function openShare() {
 }
 
 boot();
+
+/* ───────────────────────── version history ───────────────────────── */
+
+/** Line diff of two whole files: unchanged start and end are skipped, so big files stay fast. */
+function fileDiff(a, b, ctx = 3) {
+  const A = (a ?? '').split('\n');
+  const B = (b ?? '').split('\n');
+  let pre = 0;
+  while (pre < A.length && pre < B.length && A[pre] === B[pre]) pre++;
+  let suf = 0;
+  while (suf < A.length - pre && suf < B.length - pre && A[A.length - 1 - suf] === B[B.length - 1 - suf]) suf++;
+  if (pre === A.length && pre === B.length) return [];
+  const out = [];
+  if (pre > ctx) out.push({ t: '⋯', k: 'gap' });
+  for (let i = Math.max(0, pre - ctx); i < pre; i++) out.push({ t: A[i], k: 'ctx' });
+  out.push(...lineDiff(A.slice(pre, A.length - suf).join('\n'), B.slice(pre, B.length - suf).join('\n'), ctx));
+  for (let i = 0; i < Math.min(ctx, suf); i++) out.push({ t: B[B.length - suf + i], k: 'ctx' });
+  if (suf > ctx) out.push({ t: '⋯', k: 'gap' });
+  return out;
+}
+
+const dayLabel = (t) => {
+  const d = new Date(t);
+  const today = new Date();
+  const y = new Date(today);
+  y.setDate(today.getDate() - 1);
+  if (d.toDateString() === today.toDateString()) return 'Today';
+  if (d.toDateString() === y.toDateString()) return 'Yesterday';
+  return d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: d.getFullYear() === today.getFullYear() ? undefined : 'numeric' });
+};
+const timeLabel = (t) => new Date(t).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+const fullTime = (t) => `${dayLabel(t)}, ${timeLabel(t)}`;
+const byLabel = (v) => (v.by?.length ? v.by.join(', ') : v.first ? 'Starting point' : 'Saved automatically');
+
+/** Who changed what, and when. Pick a version to see its changes; editors can restore it. */
+async function openHistory() {
+  if (!state.ws) return;
+  let versions = (await api(`/api/projects/${P()}/history`)).versions;
+  let sel = versions[0];
+  let file = null;
+  let mode = 'changes'; // or 'now': this version compared with the current files
+  const { el, close } = openModal(`
+    <div class="modal-head">${icon('history')}<h2>Version history</h2>
+      ${canEdit() ? `<button class="btn-ghost small" id="nameVersion">${icon('star')}<span>Name this moment</span></button>` : ''}
+      <button class="icon-btn" data-close>${icon('x')}</button></div>
+    <div class="history">
+      <nav class="version-list" id="versionList" aria-label="Versions"></nav>
+      <section class="version-view" id="versionView"></section>
+    </div>`);
+  el.classList.add('wide');
+
+  const renderList = () => {
+    let day = '';
+    $('#versionList', el).innerHTML = versions.length
+      ? versions
+          .map((v) => {
+            const d = dayLabel(v.at);
+            const head = d !== day ? `<div class="v-day">${esc((day = d))}</div>` : '';
+            const files = v.changed.map((c) => c.path);
+            return `${head}<button class="v-item ${v.id === sel?.id ? 'active' : ''}" data-v="${esc(v.id)}">
+              <span class="v-time">${timeLabel(v.at)}</span>
+              ${v.label ? `<span class="v-label">${esc(v.label)}</span>` : ''}
+              <span class="v-by">${esc(byLabel(v))}</span>
+              <span class="v-files">${esc(files.slice(0, 3).join(', '))}${files.length > 3 ? ` +${files.length - 3}` : ''}</span>
+            </button>`;
+          })
+          .join('')
+      : '<p class="note">No versions yet. They’re saved automatically a minute after people stop typing.</p>';
+  };
+
+  const renderView = async () => {
+    const view = $('#versionView', el);
+    if (!sel) return (view.innerHTML = '');
+    const changed = sel.changed.filter((c) => c.kind !== 'removed');
+    const removed = sel.changed.filter((c) => c.kind === 'removed');
+    const options = mode === 'now' || !changed.length ? [...new Set([...changed.map((c) => c.path), ...state.files.filter((f) => f.kind === 'text').map((f) => f.path)])] : changed.map((c) => c.path);
+    if (!file || !options.includes(file)) file = options.includes(state.file) ? state.file : options[0];
+    view.innerHTML = `
+      <div class="vv-head">
+        <div class="grow"><b>${esc(sel.label || fullTime(sel.at))}</b><small>${sel.label ? `${esc(fullTime(sel.at))} · ` : ''}${esc(byLabel(sel))}</small></div>
+        ${canEdit() && sel !== versions[0] ? `<button class="btn-ghost small" data-restore-file ${file ? '' : 'disabled'}>Restore this file</button><button class="btn-primary" data-restore-all>Restore this version</button>` : ''}
+      </div>
+      <div class="vv-bar">
+        <div class="seg pills" role="tablist">
+          <button class="seg-btn ${mode === 'changes' ? 'active' : ''}" data-mode="changes">What changed</button>
+          <button class="seg-btn ${mode === 'now' ? 'active' : ''}" data-mode="now">Compared with now</button>
+        </div>
+        <select class="input" id="vvFile" aria-label="File">${options.map((p) => `<option ${p === file ? 'selected' : ''}>${esc(p)}</option>`).join('')}</select>
+      </div>
+      ${removed.length && mode === 'changes' ? `<p class="note">Removed in this version: ${removed.map((c) => esc(c.path)).join(', ')}</p>` : ''}
+      <div class="diff vv-diff" id="vvDiff"><div class="ctx"><span class="spinner"></span></div></div>`;
+    hydrateIcons(view);
+    if (!file) return ($('#vvDiff', view).innerHTML = '<div class="ctx">No text files in this version.</div>');
+    const { text, prev } = await api(`/api/projects/${P()}/history/${enc(sel.id)}/file?path=${enc(file)}`);
+    const now = state.ws?.text(file)?.toString() ?? null;
+    const [from, to] = mode === 'now' ? [text, now] : [prev, text];
+    let rows;
+    if (mode === 'changes' && sel.first) rows = (text ?? '').split('\n').map((t) => ({ t, k: 'ctx' }));
+    else rows = fileDiff(from ?? '', to ?? '');
+    const note =
+      mode === 'now' && text === null ? 'This file didn’t exist in this version.'
+      : mode === 'now' && now === null ? 'This file has since been deleted. Restore it to bring it back.'
+      : !rows.length ? (mode === 'now' ? 'This file is the same now as in this version.' : 'No changes to this file.')
+      : '';
+    $('#vvDiff', view).innerHTML = (note ? `<div class="ctx vv-note">${note}</div>` : '') + rows.map((o) => `<div class="${o.k}">${esc(o.t) || ' '}</div>`).join('');
+    if (mode === 'now' && rows.length) $('#vvDiff', view).insertAdjacentHTML('afterbegin', '<div class="vv-legend"><span class="del">In this version</span><span class="add">Now</span></div>');
+  };
+
+  el.addEventListener('click', async (e) => {
+    const item = e.target.closest('[data-v]');
+    if (item) {
+      sel = versions.find((v) => v.id === item.dataset.v);
+      renderList();
+      return renderView();
+    }
+    const m = e.target.closest('[data-mode]');
+    if (m) {
+      mode = m.dataset.mode;
+      return renderView();
+    }
+    if (e.target.closest('#nameVersion')) {
+      const label = await askText('Name this moment', { placeholder: 'e.g. Sent to supervisor', okLabel: 'Save version' });
+      if (!label) return openHistory();
+      await api(`/api/projects/${P()}/history`, { method: 'POST', body: { label, name: myIdentity().name } }).catch((err) => toast(err.message, 'err'));
+      toast(`Saved “${label}”`, 'ok');
+      return openHistory();
+    }
+    const all = e.target.closest('[data-restore-all]');
+    const one = e.target.closest('[data-restore-file]');
+    if (!all && !one) return;
+    const what = one ? `“${file}”` : 'every file';
+    if (!(await confirmBox(one ? 'Restore this file?' : 'Restore this version?', `${one ? 'The file' : 'Every file'} goes back to how it was on ${fullTime(sel.at)}. Today’s state is saved in the history first, so you can undo this.`, 'Restore'))) return openHistory();
+    try {
+      await api(`/api/projects/${P()}/history/${enc(sel.id)}/restore`, { method: 'POST', body: { path: one ? file : null, name: myIdentity().name } });
+      toast(`Restored ${what}`, 'ok');
+      if (prefs.autoCompile) scheduleCompile(200);
+    } catch (err) {
+      toast(err.message, 'err');
+    }
+    openHistory();
+  });
+  el.addEventListener('change', (e) => {
+    if (e.target.id !== 'vvFile') return;
+    file = e.target.value;
+    renderView();
+  });
+  renderList();
+  renderView().catch((e) => toast(e.message, 'err'));
+  // Keep the list fresh while it's open (new versions appear as people write).
+  const timer = setInterval(() => {
+    if (!el.isConnected) return clearInterval(timer);
+    api(`/api/projects/${P()}/history`)
+      .then((r) => {
+        if (r.versions[0]?.id === versions[0]?.id) return;
+        versions = r.versions;
+        renderList();
+      })
+      .catch(() => {});
+  }, 15000);
+  return close;
+}

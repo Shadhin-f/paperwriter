@@ -73,7 +73,8 @@
             <span class="model-text"><b id="providerLabel">…</b><small id="modelLabel">…</small></span>
             <i data-icon="chevron"></i>
           </button>
-          <button class="icon-btn small" id="newChatBtn" title="New chat"><i data-icon="plus"></i></button>
+          <button class="icon-btn small" id="newChatBtn" title="New conversation (everyone’s chats stay visible)"><i data-icon="plus"></i></button>
+          <button class="icon-btn small" id="clearChatBtn" title="Clear the chat for everyone" hidden><i data-icon="trash"></i></button>
         </div>
         <div class="messages" id="messages"></div>
         <div class="composer" id="composer">
@@ -114,6 +115,7 @@
           <button class="seg-btn" data-mode="visual" title="Type directly on the page and drag blocks to reorder">Visual</button>
         </div>
         <div class="spacer"></div>
+        <button class="icon-btn small" id="historyBtn" title="Version history"><i data-icon="history"></i></button>
         <button class="icon-btn small" id="findBtn" title="Find (Ctrl+F)"><i data-icon="search"></i></button>
         <button class="icon-btn small" id="undoBtn" title="Undo (Ctrl+Z)"><i data-icon="undo"></i></button>
         <button class="icon-btn small" id="redoBtn" title="Redo (Ctrl+Y)"><i data-icon="redo"></i></button>

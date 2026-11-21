@@ -27,6 +27,7 @@ export class Workspace {
     this.files = this.ydoc.getMap('files');
     this.meta = this.ydoc.getMap('meta');
     this.folders = this.ydoc.getMap('folders');
+    this.chat = this.ydoc.getArray('chat'); // everyone's AI conversations (written by the server)
     this.undoManagers = new Map();
     this.listeners = { status: new Set(), presence: new Set() };
     this.connected = false;
