@@ -11,8 +11,9 @@ a visual editor, an AI co-author and real-time co-editing over a link or a short
 [![Node.js 22.9+](https://img.shields.io/badge/node-%E2%89%A522.9-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org)
 [![Docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)](#-host-it-on-a-server)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-34c759)](CONTRIBUTING.md)
+[![Website](https://img.shields.io/badge/website-paperwriter--site-1d1d1f)](https://shadhin-f.github.io/paperwriter-site/)
 
-[Setup](#-setup-guide) · [Features](#-features) · [Tech stack](#-tech-stack) · [Sharing](#-sharing-a-project) · [Contributing](#-contributing)
+**[🌐 Website](https://shadhin-f.github.io/paperwriter-site/)** · [Setup](#-setup-guide) · [Features](#-features) · [Tech stack](#-tech-stack) · [Sharing](#-sharing-a-project) · [Contributing](#-contributing)
 
 </div>
 
